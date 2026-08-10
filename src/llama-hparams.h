@@ -202,6 +202,9 @@ struct llama_hparams {
     // output embedding dimension (0 = use n_embd)
     uint32_t n_embd_out_impl = 0;
 
+    // output vocabulary size (0 = use the tokenizer vocabulary size)
+    uint32_t n_vocab_out_impl = 0;
+
     // llama4 smallthinker
     uint32_t n_moe_layer_step        = 0;
     uint32_t n_no_rope_layer_step    = 4;

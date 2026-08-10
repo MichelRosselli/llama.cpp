@@ -12,6 +12,7 @@
 #include "../src/llama-model-saver.h"
 
 #include <cinttypes>
+#include <cfloat>
 #include <cstddef>
 #include <cstdio>
 #include <cstring>
@@ -79,7 +80,12 @@ static std::vector<llama_token> get_tokens(const uint32_t n_tokens, const uint32
     return ret;
 }
 
-static gguf_context_ptr get_gguf_ctx(const llm_arch arch, const bool moe) {
+static const uint32_t APERTUS_TEST_VOCAB_SIZE     = 128;
+static const uint32_t APERTUS_TEST_VOCAB_SIZE_OUT = 96;
+static const uint32_t APERTUS_TEST_70B_LAYER_COUNT = 80;
+
+static gguf_context_ptr get_gguf_ctx(
+        const llm_arch arch, const bool moe, const bool reduced_apertus_vocab = true, const uint32_t n_layer_override = 0) {
     gguf_context_ptr ret(gguf_init_empty());
     llama_model_saver ms(arch, ret.get());
     const uint32_t n_ctx = 128;
@@ -89,6 +95,9 @@ static gguf_context_ptr get_gguf_ctx(const llm_arch arch, const bool moe) {
     uint32_t n_head  = 2;
     uint32_t n_ff    = 384;
     uint32_t n_layer = 2;
+    if (n_layer_override > 0) {
+        n_layer = n_layer_override;
+    }
     if (arch == LLM_ARCH_LLAMA4) {
         n_layer = 4; // hparams.n_no_rope_layer_step is hard-coded to 4
     } else if (arch == LLM_ARCH_GEMMA4) {
@@ -121,6 +130,9 @@ static gguf_context_ptr get_gguf_ctx(const llm_arch arch, const bool moe) {
 
     ms.add_kv(LLM_KV_GENERAL_ARCHITECTURE,      llm_arch_name(arch));
     ms.add_kv(LLM_KV_VOCAB_SIZE,                n_vocab);
+    if (arch == LLM_ARCH_APERTUS && reduced_apertus_vocab) {
+        ms.add_kv(LLM_KV_VOCAB_SIZE_OUT, APERTUS_TEST_VOCAB_SIZE_OUT);
+    }
     ms.add_kv(LLM_KV_CONTEXT_LENGTH,            n_ctx);
     ms.add_kv(LLM_KV_EMBEDDING_LENGTH,          n_embd);
     ms.add_kv(LLM_KV_FEATURES_LENGTH,           n_embd);
@@ -331,6 +343,41 @@ static std::vector<float> get_logits(
     return ret;
 }
 
+static bool check_apertus_output_padding(const std::vector<float> & logits, const uint32_t n_tokens) {
+    if (logits.size() != n_tokens*APERTUS_TEST_VOCAB_SIZE) {
+        return false;
+    }
+
+    for (uint32_t i = 0; i < n_tokens; ++i) {
+        for (uint32_t token = APERTUS_TEST_VOCAB_SIZE_OUT; token < APERTUS_TEST_VOCAB_SIZE; ++token) {
+            if (logits[i*APERTUS_TEST_VOCAB_SIZE + token] != -FLT_MAX) {
+                return false;
+            }
+        }
+    }
+
+    return true;
+}
+
+static bool test_apertus_legacy_vocab(const size_t seed, const std::vector<llama_token> & tokens) {
+    gguf_context_ptr gguf_ctx = get_gguf_ctx(LLM_ARCH_APERTUS, false, false);
+    auto model_and_ctx = get_model_and_ctx(gguf_ctx.get(), nullptr, seed, {});
+    const std::vector<float> logits = get_logits(model_and_ctx.first.get(), model_and_ctx.second.get(), tokens);
+    return logits.size() == tokens.size()*APERTUS_TEST_VOCAB_SIZE;
+}
+
+static bool test_apertus_70b_layer_path(const size_t seed, const std::vector<ggml_backend_dev_t> & devs) {
+    gguf_context_ptr gguf_ctx = get_gguf_ctx(LLM_ARCH_APERTUS, false, true, APERTUS_TEST_70B_LAYER_COUNT);
+    auto model_and_ctx = get_model_and_ctx(gguf_ctx.get(), nullptr, seed, devs);
+    if (llama_model_n_layer(model_and_ctx.first.get()) != APERTUS_TEST_70B_LAYER_COUNT) {
+        return false;
+    }
+
+    const std::vector<llama_token> tokens = { APERTUS_TEST_VOCAB_SIZE - 1 };
+    const std::vector<float> logits = get_logits(model_and_ctx.first.get(), model_and_ctx.second.get(), tokens);
+    return check_apertus_output_padding(logits, tokens.size());
+}
+
 static bool moe_mandatory(const llm_arch arch) {
     switch (arch) {
         case LLM_ARCH_LLAMA4:
@@ -523,8 +570,13 @@ static int test_backends(const llm_arch target_arch, const size_t seed, const gg
         ud->original_logger.callback(level_eff, text, ud->original_logger.user_data);
     }, &ud);
 
-    const std::vector<llama_token> tokens = get_tokens(128, 128, seed);
+    std::vector<llama_token> tokens = get_tokens(128, APERTUS_TEST_VOCAB_SIZE, seed);
+    tokens[0] = APERTUS_TEST_VOCAB_SIZE - 1;
 
+    if ((target_arch == LLM_ARCH_UNKNOWN || target_arch == LLM_ARCH_APERTUS) && !test_apertus_legacy_vocab(seed, tokens)) {
+        LOG_ERR("%s: Apertus legacy vocabulary test failed\n", __func__);
+        return 1;
+    }
     struct device_config {
         std::vector<ggml_backend_dev_t> devs;
         std::string                     label;
@@ -553,6 +605,15 @@ static int test_backends(const llm_arch target_arch, const size_t seed, const gg
         }
 
         dev_configs.emplace_back(devices_meta, "Meta", LLAMA_SPLIT_MODE_TENSOR);
+    }
+
+    if (target_arch == LLM_ARCH_UNKNOWN || target_arch == LLM_ARCH_APERTUS) {
+        for (const device_config & dc : dev_configs) {
+            if (dc.split_mode == LLAMA_SPLIT_MODE_LAYER && !test_apertus_70b_layer_path(seed, dc.devs)) {
+                LOG_ERR("%s: Apertus 70B layer path test failed on %s\n", __func__, dc.label.c_str());
+                return 1;
+            }
+        }
     }
 
     size_t max_arch_name_length = 0;
@@ -625,7 +686,7 @@ static int test_backends(const llm_arch target_arch, const size_t seed, const gg
                         const double nmse_val = nmse(logits_cpu, logits_dev);
                         snprintf(nmse_str, sizeof(nmse_str), "(%.2e)", nmse_val);
                         status_nmse = "\033[1;32mOK\033[0m";
-                        if (nmse_val > 1e-4) {
+                        if (nmse_val > 1e-4 || (arch == LLM_ARCH_APERTUS && !check_apertus_output_padding(logits_dev, tokens.size()))) {
                             all_ok = false;
                             status_nmse = "\033[1;31mFAIL\033[0m";
                         }
@@ -647,6 +708,10 @@ static int test_backends(const llm_arch target_arch, const size_t seed, const gg
                             model_and_ctx_roundtrip.first.get(), model_and_ctx_roundtrip.second.get(), tokens, encode);
                         status_roundtrip = "\033[1;32mOK\033[0m";
                         GGML_ASSERT(logits_roundtrip.size() == logits_dev.size());
+                        if (arch == LLM_ARCH_APERTUS && !check_apertus_output_padding(logits_roundtrip, tokens.size())) {
+                            all_ok = false;
+                            status_roundtrip = "\033[1;31mFAIL\033[0m";
+                        }
                         for (size_t i = 0; i < logits_roundtrip.size(); i++) {
                             if (logits_roundtrip[i] != logits_dev[i]) {
                                 all_ok = false;

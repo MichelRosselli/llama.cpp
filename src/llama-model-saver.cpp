@@ -204,6 +204,9 @@ void llama_model_saver::add_kv_from_model() {
     // add_kv(LLM_KV_GENERAL_SOURCE_HF_REPO,            ???);
 
     add_kv(LLM_KV_VOCAB_SIZE,                        vocab.n_tokens());
+    if (hparams.n_vocab_out_impl > 0) {
+        add_kv(LLM_KV_VOCAB_SIZE_OUT,                hparams.n_vocab_out_impl);
+    }
     add_kv(LLM_KV_CONTEXT_LENGTH,                    hparams.n_ctx_train);
     add_kv(LLM_KV_EMBEDDING_LENGTH,                  hparams.n_embd);
     if (hparams.n_embd_out_impl > 0) {
