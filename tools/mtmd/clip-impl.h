@@ -100,6 +100,15 @@
 // audio generation (gen-audio)-specific
 #define KEY_GEN_AUDIO_PROJ_TYPE    "clip.gen.audio.projector_type" // for models with mixed modalities
 #define KEY_AUDIO_SUBSAMPLING_FACTOR "clip.audio.subsampling_factor"
+#define KEY_A_CODEBOOK_SIZE          "clip.audio.codebook_size"
+#define KEY_A_CODEBOOK_DIM           "clip.audio.codebook_dim"
+#define KEY_A_TOKEN_OFFSET           "clip.audio.token_offset"
+#define KEY_A_SAMPLE_RATE            "clip.audio.sample_rate"
+#define KEY_A_HOP_LENGTH             "clip.audio.hop_length"
+#define KEY_A_DOWNSAMPLE_RATIOS      "clip.audio.downsample_ratios"
+#define KEY_A_RESIDUAL_BLOCK_COUNT   "clip.audio.residual_block_count"
+#define KEY_A_DILATION_GROWTH_RATE   "clip.audio.dilation_growth_rate"
+#define KEY_A_LSTM_BLOCK_COUNT       "clip.audio.lstm_block_count"
 
 //
 // tensor name constants
@@ -409,6 +418,11 @@
 #define TN_APERTUS_V_MID_ATTN      "v.encoder.mid.attn_1.%s.%s"
 #define TN_APERTUS_V_QUANT_CONV    "v.quant_conv.%s"
 #define TN_APERTUS_V_CODEBOOK      "v.codebook.weight"
+#define TN_APERTUS_A_CONV          "a.encoder.layers.%d.conv.%s"
+#define TN_APERTUS_A_RESBLOCK_CONV "a.encoder.layers.%d.block.%d.conv.%s"
+#define TN_APERTUS_A_SHORTCUT      "a.encoder.layers.%d.shortcut.conv.%s"
+#define TN_APERTUS_A_LSTM          "a.encoder.layers.13.lstm.%s_l%d"
+#define TN_APERTUS_A_CODEBOOK      "a.codebook.weight"
 
 // align x to upper multiple of n
 #define CLIP_ALIGN(x, n) ((((x) + (n) - 1) / (n)) * (n))
@@ -476,6 +490,7 @@ enum projector_type {
     PROJECTOR_TYPE_QWEN3TTS_GEN,
     PROJECTOR_TYPE_MUSE_GLIMMER,
     PROJECTOR_TYPE_APERTUS_VISION,
+    PROJECTOR_TYPE_APERTUS_AUDIO,
     PROJECTOR_TYPE_UNKNOWN,
 };
 
@@ -537,6 +552,7 @@ static std::map<projector_type, std::string> PROJECTOR_TYPE_NAMES = {
     { PROJECTOR_TYPE_QWEN3TTS_GEN,      "qwen3tts_gen"},
     { PROJECTOR_TYPE_MUSE_GLIMMER,      "muse-glimmer"},
     { PROJECTOR_TYPE_APERTUS_VISION,    "apertus_vision"},
+    { PROJECTOR_TYPE_APERTUS_AUDIO,     "apertus_audio"},
 };
 
 static projector_type clip_projector_type_from_string(const std::string & str) {

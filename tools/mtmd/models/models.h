@@ -375,3 +375,8 @@ struct clip_graph_apertus_vision : clip_graph {
     clip_graph_apertus_vision(clip_ctx * ctx, const clip_image_f32 & img) : clip_graph(ctx, img) {}
     ggml_cgraph * build() override;
 };
+
+struct clip_graph_apertus_audio : clip_graph {
+    clip_graph_apertus_audio(clip_ctx * ctx, const clip_image_f32 & img) : clip_graph(ctx, img) {}
+    ggml_cgraph * build() override;
+};

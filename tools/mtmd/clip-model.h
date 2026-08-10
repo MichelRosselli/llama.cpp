@@ -138,6 +138,12 @@ struct clip_hparams {
     int32_t audio_proj_downsample_rate = 0;
     int32_t audio_proj_head_count      = 0;
 
+    // Apertus audio tokenizer
+    int32_t audio_residual_block_count = 0;
+    int32_t audio_dilation_growth_rate = 0;
+    int32_t audio_lstm_block_count = 0;
+    std::vector<int32_t> audio_downsample_ratios;
+
     // audio-to-mel preprocessor params
     int32_t audio_chunk_len   = -1; // in seconds
     int32_t audio_sample_rate = -1;
@@ -514,6 +520,24 @@ struct apertus_vision_stage {
     ggml_tensor * downsample_b = nullptr;
 };
 
+struct apertus_audio_conv {
+    ggml_tensor * w = nullptr;
+    ggml_tensor * b = nullptr;
+};
+
+struct apertus_audio_resblock {
+    apertus_audio_conv conv1;
+    apertus_audio_conv conv2;
+    apertus_audio_conv shortcut;
+};
+
+struct apertus_audio_lstm_layer {
+    ggml_tensor * weight_ih = nullptr;
+    ggml_tensor * weight_hh = nullptr;
+    ggml_tensor * bias_ih = nullptr;
+    ggml_tensor * bias_hh = nullptr;
+};
+
 struct clip_model {
     clip_modality modality = CLIP_MODALITY_VISION;
     projector_type proj_type = PROJECTOR_TYPE_MLP;
@@ -542,6 +566,12 @@ struct clip_model {
     apertus_vision_resblock apertus_v_mid_block_1;
     apertus_vision_attention apertus_v_mid_attention;
     apertus_vision_resblock apertus_v_mid_block_2;
+
+    // Apertus discrete audio tokenizer
+    std::vector<apertus_audio_conv> apertus_a_convs;
+    std::vector<apertus_audio_resblock> apertus_a_resblocks;
+    std::vector<apertus_audio_lstm_layer> apertus_a_lstm_layers;
+    ggml_tensor * apertus_a_codebook = nullptr;
 
     // "indexed" patch embedding norms
     ggml_tensor * patch_norm_1_w = nullptr;

@@ -1024,6 +1024,12 @@ struct mtmd_context {
                 {
                     audio_preproc = std::make_unique<mtmd_audio_preprocessor_qwen3tts_spk>(ctx_a);
                 } break;
+            case PROJECTOR_TYPE_APERTUS_AUDIO:
+                {
+                    aud_beg = "<|audio_start|>";
+                    aud_end = "<|audio_end|>";
+                    audio_preproc = std::make_unique<mtmd_audio_preprocessor_apertus>(ctx_a);
+                } break;
             default:
                 throw std::runtime_error(string_format("%s: unexpected audio projector type %d\n", __func__, proj));
         }

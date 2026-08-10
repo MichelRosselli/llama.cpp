@@ -1320,6 +1320,44 @@ bool mtmd_audio_preprocessor_gemma4ua::preprocess(const float *                 
     return true;
 }
 
+// mtmd_audio_preprocessor_apertus
+//
+
+void mtmd_audio_preprocessor_apertus::initialize() {
+}
+
+bool mtmd_apertus_audio_prepare(const float * samples, size_t n_samples, mtmd_audio_mel & output) {
+    if (samples == nullptr || n_samples == 0) {
+        return false;
+    }
+
+    output.n_len = n_samples;
+    output.n_len_org = n_samples;
+    output.n_mel = 1;
+    output.data.assign(samples, samples + n_samples);
+    float peak = 0.0f;
+    for (float sample : output.data) {
+        peak = std::max(peak, std::abs(sample));
+    }
+    const float target_peak = std::pow(10.0f, -3.0f / 20.0f);
+    const float scale = target_peak / std::max(peak, 1e-10f);
+    for (float & sample : output.data) {
+        sample *= scale;
+    }
+    return true;
+}
+
+bool mtmd_audio_preprocessor_apertus::preprocess(const float *                 samples,
+                                                  size_t                        n_samples,
+                                                  std::vector<mtmd_audio_mel> & output) {
+    mtmd_audio_mel waveform;
+    if (!mtmd_apertus_audio_prepare(samples, n_samples, waveform)) {
+        return false;
+    }
+    output.push_back(std::move(waveform));
+    return true;
+}
+
 //
 // mtmd_audio_streaming_istft implementation
 //

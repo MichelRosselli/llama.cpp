@@ -1,7 +1,9 @@
+#include "mtmd-audio.h"
 #include "mtmd-image.h"
 
 #undef NDEBUG
 #include <cassert>
+#include <cmath>
 #include <cstdint>
 #include <vector>
 
@@ -46,6 +48,24 @@ int main() {
         const float normalized = ((float) expected[i] - 127.5f) / 127.5f;
         assert(actual[i] == normalized);
     }
+
+    mtmd_audio_mel waveform;
+    assert(!mtmd_apertus_audio_prepare(nullptr, 0, waveform));
+    assert(!mtmd_apertus_audio_prepare(nullptr, 1, waveform));
+
+    const std::vector<float> silence(600, 0.0f);
+    assert(mtmd_apertus_audio_prepare(silence.data(), silence.size(), waveform));
+    assert(waveform.n_len == 600);
+    assert(waveform.n_len_org == 600);
+    assert(waveform.n_mel == 1);
+    assert(waveform.data == silence);
+
+    const std::vector<float> samples = { 0.0f, 0.25f, -0.5f };
+    assert(mtmd_apertus_audio_prepare(samples.data(), samples.size(), waveform));
+    const float target_peak = std::pow(10.0f, -3.0f / 20.0f);
+    assert(std::abs(waveform.data[0]) < 1e-7f);
+    assert(std::abs(waveform.data[1] - 0.5f * target_peak) < 1e-7f);
+    assert(std::abs(waveform.data[2] + target_peak) < 1e-7f);
 
     return 0;
 }

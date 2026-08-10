@@ -29,6 +29,7 @@ add_library(mtmd
             models/models.h
             models/cogvlm.cpp
             models/apertus-vision.cpp
+            models/apertus-audio.cpp
             models/conformer.cpp
             models/dotsocr.cpp
             models/exaone4_5.cpp
