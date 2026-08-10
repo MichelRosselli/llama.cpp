@@ -2943,6 +2943,185 @@ static void trim_all_content(std::vector<common_chat_msg> & messages) {
 
 }
 
+// Apertus 1.5 uses content.blocks for reasoning history, while the OpenAI-compatible API exposes
+// reasoning as a separate reasoning_content field. Convert all assistant turns to the official
+// block representation so that a conversation can preserve reasoning without mixing the string
+// and mapping formats rejected by the template.
+static json apertus_1_5_adjust_messages(const json & messages) {
+    json adjusted = json::array();
+
+    for (const auto & message : messages) {
+        if (message.value("role", "") != "assistant") {
+            adjusted.push_back(message);
+            continue;
+        }
+
+        json blocks = json::array();
+
+        if (message.contains("reasoning_content") && message.at("reasoning_content").is_string()) {
+            const auto & reasoning = message.at("reasoning_content").get_ref<const std::string &>();
+            if (!reasoning.empty()) {
+                blocks.push_back({
+                    { "type", "thoughts" },
+                    { "text", reasoning },
+                });
+            }
+        }
+
+        if (message.contains("content") && message.at("content").is_string()) {
+            const auto & content = message.at("content").get_ref<const std::string &>();
+            if (!content.empty()) {
+                blocks.push_back({
+                    { "type", "response" },
+                    { "text", content },
+                });
+            }
+        }
+
+        if (message.contains("tool_calls") && message.at("tool_calls").is_array() &&
+            !message.at("tool_calls").empty()) {
+            blocks.push_back({
+                { "type", "tool_calls" },
+                { "calls", message.at("tool_calls") },
+            });
+        }
+
+        json converted = message;
+        converted["content"] = {
+            { "blocks", std::move(blocks) },
+        };
+        converted.erase("reasoning_content");
+        converted.erase("tool_calls");
+        adjusted.push_back(std::move(converted));
+    }
+
+    return adjusted;
+}
+
+// Apertus 1.5 format:
+// - reasoning: <|inner_prefix|>{reasoning}<|inner_suffix|>
+// - tool calls: <|tools_prefix|>[{"function_name": { ... }}]<|tools_suffix|>
+static common_chat_params common_chat_params_init_apertus_1_5(
+        const common_chat_template &          tmpl,
+        const autoparser::generation_params & inputs) {
+    static const std::string ASSISTANT_START = "<|assistant_start|>";
+    static const std::string INNER_START     = "<|inner_prefix|>";
+    static const std::string INNER_END       = "<|inner_suffix|>";
+    static const std::string TOOLS_START     = "<|tools_prefix|>";
+    static const std::string TOOLS_END       = "<|tools_suffix|>";
+
+    common_chat_params data;
+
+    auto adjusted_messages = apertus_1_5_adjust_messages(inputs.messages);
+    data.prompt = common_chat_template_direct_apply_impl(tmpl, inputs, adjusted_messages);
+    data.generation_prompt = common_chat_template_generation_prompt_impl(tmpl, inputs, adjusted_messages);
+    data.format             = COMMON_CHAT_FORMAT_PEG_NATIVE;
+    data.supports_thinking  = true;
+    data.thinking_start_tag = INNER_START;
+    data.thinking_end_tags  = {INNER_END};
+    data.preserved_tokens   = {
+        INNER_START,
+        INNER_END,
+        TOOLS_START,
+        TOOLS_END,
+    };
+    data.message_delimiters = {
+        { COMMON_CHAT_ROLE_ASSISTANT, ASSISTANT_START     },
+        { COMMON_CHAT_ROLE_TOOL,      "<|tool_output_start|>" },
+        { COMMON_CHAT_ROLE_USER,      "<|user_start|>"   },
+        { COMMON_CHAT_ROLE_SYSTEM,    "<|system_start|>" },
+    };
+
+    if (inputs.has_continuation()) {
+        const auto & message = inputs.continue_msg;
+
+        data.generation_prompt = ASSISTANT_START;
+        if (!message.reasoning_content.empty()) {
+            data.generation_prompt += INNER_START + message.reasoning_content;
+            if (inputs.continue_final_message == COMMON_CHAT_CONTINUATION_CONTENT) {
+                data.generation_prompt += INNER_END;
+            }
+        }
+        if (inputs.continue_final_message == COMMON_CHAT_CONTINUATION_CONTENT) {
+            data.generation_prompt += message.render_content();
+        }
+
+        data.prompt += data.generation_prompt;
+    }
+
+    const bool has_tools = inputs.tools.is_array() && !inputs.tools.empty() &&
+                           inputs.tool_choice != COMMON_CHAT_TOOL_CHOICE_NONE;
+    const bool has_response_format = inputs.json_schema.is_object() && !inputs.json_schema.empty();
+    const bool extract_reasoning = inputs.reasoning_format != COMMON_REASONING_FORMAT_NONE;
+    const bool include_grammar = has_response_format || has_tools;
+
+    auto parser = build_chat_peg_parser([&](common_chat_peg_builder & p) {
+        auto generation_prompt = p.literal(ASSISTANT_START);
+        auto end               = p.end();
+
+        auto reasoning = p.eps();
+        if (extract_reasoning) {
+            reasoning = p.optional(
+                p.literal(INNER_START) + p.reasoning(p.until(INNER_END)) + p.literal(INNER_END));
+        }
+
+        if (has_response_format) {
+            return generation_prompt + reasoning +
+                   p.content(p.schema(p.json(), "response-format-schema", inputs.json_schema)) + end;
+        }
+
+        if (!has_tools) {
+            return generation_prompt + reasoning + p.content(p.rest()) + end;
+        }
+
+        auto tool_section = p.standard_json_tools(
+            TOOLS_START,
+            TOOLS_END,
+            inputs.tools,
+            inputs.parallel_tool_calls,
+            /* force_tool_calls = */ true,
+            /* name_key = */ "",
+            /* args_key = */ "",
+            /* array_wrapped = */ true,
+            /* function_is_key = */ true,
+            /* call_id_key = */ "",
+            /* gen_call_id_key = */ "",
+            /* parameters_order = */ {},
+            /* accept_openai_wrapper = */ false,
+            /* allow_missing_section_end = */ true);
+
+        auto content_before = p.content(p.until(TOOLS_START));
+        auto content_after  = p.content(p.rest());
+        return generation_prompt + reasoning + content_before + p.optional(tool_section) + content_after + end;
+    });
+
+    data.parser = parser.save();
+
+    if (include_grammar) {
+        data.grammar_lazy = !(has_response_format || inputs.tool_choice == COMMON_CHAT_TOOL_CHOICE_REQUIRED);
+        data.grammar = build_grammar([&](const common_grammar_builder & builder) {
+            foreach_function(inputs.tools, [&](const json & tool) {
+                const auto & function = tool.at("function");
+                auto schema = function.contains("parameters") ? function.at("parameters") : json::object();
+                builder.resolve_refs(schema);
+            });
+            if (has_response_format) {
+                auto schema = inputs.json_schema;
+                builder.resolve_refs(schema);
+            }
+            parser.build_grammar(builder, data.grammar_lazy);
+        });
+
+        if (has_tools) {
+            data.grammar_triggers = {
+                { COMMON_GRAMMAR_TRIGGER_TYPE_WORD, TOOLS_START },
+            };
+        }
+    }
+
+    return data;
+}
+
 // MiniCPM5 format:
 // - Reasoning: <think>{reasoning}</think> (optional)
 // - Tool calls: <function name="foo"><param name="bar">value</param></function>
@@ -3245,6 +3424,15 @@ std::optional<common_chat_params> common_chat_try_specialized_template(
         const common_chat_template &          tmpl,
         const std::string &                   src,
         autoparser::generation_params & params) {
+    // Apertus 1.5 uses content.blocks to preserve reasoning history and a function-name-as-key
+    // JSON format for tool calls, which cannot be inferred completely by the differential parser.
+    if (src.find("You are Apertus 1.5 Omni") != std::string::npos &&
+        src.find("<|inner_prefix|>") != std::string::npos &&
+        src.find("<|tools_prefix|>") != std::string::npos) {
+        LOG_DBG("Using specialized template: Apertus 1.5\n");
+        return common_chat_params_init_apertus_1_5(tmpl, params);
+    }
+
     // Ministral/Mistral Large 3 - uses special reasoning structure fixes, can't use autoparser
     // Note: Mistral Small 3.2 uses [CALL_ID] which Ministral doesn't have, so we can distinguish them
     if (src.find("[SYSTEM_PROMPT]") != std::string::npos && src.find("[TOOL_CALLS]") != std::string::npos &&

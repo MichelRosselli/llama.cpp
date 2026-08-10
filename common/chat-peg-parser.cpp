@@ -2,6 +2,7 @@
 
 #include "chat-auto-parser.h"
 #include "ggml.h"
+#include "json-schema-to-grammar.h"
 #include "peg-parser.h"
 
 #include <nlohmann/json.hpp>
@@ -919,7 +920,8 @@ common_peg_parser common_chat_peg_builder::standard_json_tools(
                                                        const std::string &              call_id_key,
                                                        const std::string &              gen_call_id_key,
                                                        const std::vector<std::string> & parameters_order,
-                                                       bool                             accept_openai_wrapper) {
+                                                       bool                             accept_openai_wrapper,
+                                                       bool                             allow_missing_section_end) {
     if (!tools.is_array() || tools.empty()) {
         return eps();
     }
@@ -951,8 +953,15 @@ common_peg_parser common_chat_peg_builder::standard_json_tools(
         tool_calls = literal("[") + space() + tool_calls + space() + literal("]");
     }
 
-    auto section =
-        trigger_rule("tool-call", literal(section_start) + space() + tool_calls + space() + literal(section_end));
+    auto section_end_parser = literal(section_end);
+    if (allow_missing_section_end) {
+        // Keep generation constrained to the complete format while allowing the response parser
+        // to recover a valid JSON call when generation was truncated immediately before the suffix.
+        section_end_parser = gbnf(optional(section_end_parser), gbnf_format_literal(section_end));
+    }
+
+    auto section = trigger_rule(
+        "tool-call", literal(section_start) + space() + tool_calls + space() + section_end_parser);
 
     return force_tool_calls ? section : optional(section);
 }

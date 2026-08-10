@@ -138,7 +138,8 @@ class common_chat_peg_builder : public common_peg_parser_builder {
                                           const std::string &              call_id_key = "",
                                           const std::string &              gen_call_id_key = "",
                                           const std::vector<std::string> & parameters_order = {},
-                                          bool                             accept_openai_wrapper = false);
+                                          bool                             accept_openai_wrapper = false,
+                                          bool                             allow_missing_section_end = false);
 
     // Legacy-compatible helper for building XML/tagged style tool calls
     // Used by tests and manual parsers
