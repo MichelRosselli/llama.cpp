@@ -11,7 +11,7 @@ import torch
 if TYPE_CHECKING:
     from torch import Tensor
 
-from .base import ModelBase, TextModel, gguf, logger
+from .base import LazyTorchTensor, MmprojModel, ModelBase, TextModel, gguf, logger
 
 
 @ModelBase.register(
@@ -456,3 +456,149 @@ class ApertusModel(LlamaModel):
             return
 
         yield from super().modify_tensors(data_torch, name, bid)
+
+
+@ModelBase.register(
+    "Apertus1p5ForConditionalGeneration",
+    "Apertus1p5TextForCausalLM",
+)
+class Apertus1p5Model(ApertusModel):
+    model_arch = gguf.MODEL_ARCH.APERTUS
+
+    def set_vocab(self):
+        super().set_vocab()
+
+        with open(self.dir_model / "tokenizer.json", encoding="utf-8") as f:
+            tokenizer_json = json.load(f)
+        added_tokens = {token["content"]: token["id"] for token in tokenizer_json["added_tokens"]}
+
+        self.gguf_writer.add_eot_token_id(added_tokens["<|assistant_end|>"])
+        self.gguf_writer.add_eom_token_id(added_tokens["<|tools_suffix|>"])
+
+    def set_gguf_parameters(self):
+        super().set_gguf_parameters()
+
+        n_vocab = self.hparams["vocab_size"]
+        n_vocab_out = self.hparams["output_vocab_size"]
+        if not 0 < n_vocab_out <= n_vocab:
+            raise ValueError(f"Invalid output vocabulary size {n_vocab_out} for input vocabulary size {n_vocab}")
+        self.gguf_writer.add_vocab_size_out(n_vocab_out)
+
+
+@ModelBase.register("Apertus1p5ForConditionalGeneration")
+class Apertus1p5MmprojModel(MmprojModel):
+    has_vision_encoder = True
+    has_audio_encoder = True
+
+    def get_vision_config(self):
+        config = dict(self.global_config["vision_tokenizer_config"])
+        config["image_size"] = config["resolution"]
+        config["patch_size"] = 2 ** (len(config["channel_multiplier"]) - 1)
+        config["hidden_size"] = config["base_channels"]
+        config["intermediate_size"] = 0
+        config["num_hidden_layers"] = len(config["channel_multiplier"])
+        config["num_attention_heads"] = 1
+        return config
+
+    def get_audio_config(self):
+        config = dict(self.global_config["audio_tokenizer_config"])
+        config["intermediate_size"] = 0
+        config["num_hidden_layers"] = len(config["upsampling_ratios"])
+        config["num_attention_heads"] = 1
+        return config
+
+    def set_gguf_parameters(self):
+        assert self.hparams_vision is not None
+        assert self.hparams_audio is not None
+
+        vision = self.hparams_vision
+        audio = self.hparams_audio
+        spatial_factor = 2 ** (len(vision["channel_multiplier"]) - 1)
+        attention_levels = [
+            level
+            for level in range(len(vision["channel_multiplier"]))
+            if vision["resolution"] // (2 ** level) in vision["attn_resolutions"]
+        ]
+
+        self.gguf_writer.add_file_type(self.ftype)
+        self.gguf_writer.add_clip_has_vision_encoder(True)
+        self.gguf_writer.add_clip_has_audio_encoder(True)
+
+        self.gguf_writer.add_clip_vision_projector_type(gguf.VisionProjectorType.APERTUS_VISION)
+        self.gguf_writer.add_vision_projection_dim(self.n_embd_text)
+        self.gguf_writer.add_vision_image_size(vision["resolution"])
+        self.gguf_writer.add_vision_patch_size(spatial_factor)
+        self.gguf_writer.add_vision_embedding_length(vision["base_channels"])
+        self.gguf_writer.add_vision_feed_forward_length(0)
+        self.gguf_writer.add_vision_block_count(len(vision["channel_multiplier"]))
+        self.gguf_writer.add_vision_head_count(1)
+        self.gguf_writer.add_vision_attention_layernorm_eps(1e-6)
+        self.gguf_writer.add_vision_image_mean(self.preprocessor_config["image_mean"])
+        self.gguf_writer.add_vision_image_std(self.preprocessor_config["image_std"])
+        self.gguf_writer.add_vision_min_pixels(self.preprocessor_config["min_pixels"])
+        self.gguf_writer.add_vision_max_pixels(self.preprocessor_config["max_pixels"])
+        self.gguf_writer.add_vision_codebook_size(vision["codebook_size"])
+        self.gguf_writer.add_vision_codebook_dim(vision["embed_dim"])
+        self.gguf_writer.add_vision_token_offset(self.global_config["image_token_offset"])
+        self.gguf_writer.add_vision_spatial_factor(spatial_factor)
+        self.gguf_writer.add_vision_channel_multipliers(vision["channel_multiplier"])
+        self.gguf_writer.add_vision_residual_block_count(vision["num_res_blocks"])
+        self.gguf_writer.add_vision_attention_levels(attention_levels)
+
+        self.gguf_writer.add_clip_audio_projector_type(gguf.VisionProjectorType.APERTUS_AUDIO)
+        self.gguf_writer.add_audio_projection_dim(self.n_embd_text)
+        self.gguf_writer.add_audio_embedding_length(audio["hidden_size"])
+        self.gguf_writer.add_audio_feed_forward_length(0)
+        self.gguf_writer.add_audio_block_count(len(audio["upsampling_ratios"]))
+        self.gguf_writer.add_audio_head_count(1)
+        self.gguf_writer.add_audio_attention_layernorm_eps(1e-6)
+        self.gguf_writer.add_audio_num_mel_bins(1)
+        self.gguf_writer.add_audio_codebook_size(audio["codebook_size"])
+        self.gguf_writer.add_audio_codebook_dim(audio["codebook_dim"])
+        self.gguf_writer.add_audio_token_offset(self.global_config["audio_token_offset"])
+        self.gguf_writer.add_audio_sample_rate(audio["sampling_rate"])
+        self.gguf_writer.add_audio_hop_length(math.prod(audio["upsampling_ratios"]))
+        self.gguf_writer.add_audio_downsample_ratios(list(reversed(audio["upsampling_ratios"])))
+        self.gguf_writer.add_audio_residual_block_count(audio["num_residual_layers"])
+        self.gguf_writer.add_audio_dilation_growth_rate(audio["dilation_growth_rate"])
+        self.gguf_writer.add_audio_lstm_block_count(audio["num_lstm_layers"])
+
+    @classmethod
+    def filter_tensors(cls, item):
+        name, generator = item
+        if name.startswith("model.vision_tokenizer."):
+            return name, generator
+        if name.startswith("model.audio_tokenizer.encoder."):
+            return name, generator
+        if name == "model.audio_tokenizer.quantizer.codebook.embed":
+            return name, generator
+        return None
+
+    def tensor_force_quant(self, name, new_name, bid, n_dims):
+        return gguf.GGMLQuantizationType.F32
+
+    def modify_tensors(self, data_torch, name, bid):
+        if name.startswith("model.vision_tokenizer."):
+            new_name = "v." + name.removeprefix("model.vision_tokenizer.")
+            new_name = new_name.replace("quantize.embedding.", "codebook.")
+            yield new_name, data_torch
+            return
+
+        if name.startswith("model.audio_tokenizer.encoder."):
+            weight_norm_g = ".parametrizations.weight.original0"
+            weight_norm_v = ".parametrizations.weight.original1"
+            if name.endswith(weight_norm_v):
+                return
+            if name.endswith(weight_norm_g):
+                v_name = name.removesuffix(weight_norm_g) + weight_norm_v
+                g = LazyTorchTensor.to_eager(data_torch).float()
+                v = LazyTorchTensor.to_eager(self.model_tensors[v_name]()).float()
+                data_torch = torch._weight_norm(v, g, dim=0)
+                name = name.removesuffix(weight_norm_g) + ".weight"
+            new_name = "a." + name.removeprefix("model.audio_tokenizer.")
+            yield new_name, data_torch
+            return
+
+        if name == "model.audio_tokenizer.quantizer.codebook.embed":
+            yield "a.codebook.weight", data_torch
+            return

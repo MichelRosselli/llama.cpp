@@ -20,6 +20,8 @@ TEXT_MODEL_MAP: dict[str, str] = {
     "AfmoeForCausalLM": "afmoe",
     "LagunaForCausalLM": "laguna",
     "ApertusForCausalLM": "llama",
+    "Apertus1p5ForConditionalGeneration": "llama",
+    "Apertus1p5TextForCausalLM": "llama",
     "ArceeForCausalLM": "llama",
     "ArcticForCausalLM": "arctic",
     "AudioFlamingo3ForConditionalGeneration": "qwen",
@@ -265,6 +267,7 @@ TEXT_MODEL_MAP: dict[str, str] = {
 
 
 MMPROJ_MODEL_MAP: dict[str, str] = {
+    "Apertus1p5ForConditionalGeneration": "llama",
     "AudioFlamingo3ForConditionalGeneration": "ultravox",
     "CogVLMForCausalLM": "cogvlm",
     "DeepseekOCR2ForCausalLM": "deepseek",

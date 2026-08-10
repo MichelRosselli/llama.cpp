@@ -103,6 +103,7 @@ class Keys:
 
     class LLM:
         VOCAB_SIZE                        = "{arch}.vocab_size"
+        VOCAB_SIZE_OUT                    = "{arch}.vocab_size_out"
         CONTEXT_LENGTH                    = "{arch}.context_length"
         EMBEDDING_LENGTH                  = "{arch}.embedding_length"
         EMBEDDING_LENGTH_OUT              = "{arch}.embedding_length_out"
@@ -358,6 +359,13 @@ class Keys:
         WINDOW_SIZE           = "clip.vision.window_size"
         FEATURE_LAYERS        = "clip.vision.feature_layer" # Granite4 Vision
         IMAGE_GRID_PINPOINTS  = "clip.vision.image_grid_pinpoints" # Granite4 Vision
+        CODEBOOK_SIZE         = "clip.vision.codebook_size"
+        CODEBOOK_DIM          = "clip.vision.codebook_dim"
+        TOKEN_OFFSET          = "clip.vision.token_offset"
+        SPATIAL_FACTOR        = "clip.vision.spatial_factor"
+        CHANNEL_MULTIPLIERS   = "clip.vision.channel_multipliers"
+        RESIDUAL_BLOCK_COUNT  = "clip.vision.residual_block_count"
+        ATTENTION_LEVELS      = "clip.vision.attention_levels"
 
         class Attention:
             HEAD_COUNT      = "clip.vision.attention.head_count"
@@ -394,6 +402,15 @@ class Keys:
         WINDOW_SIZE         = "clip.audio.window_size"
         LOCAL_BLOCK_COUNT   = "clip.audio.local_block_count" # mimo-v2.5: input_local_transformer layer count
         LOCAL_GROUP_SIZE    = "clip.audio.local_group_size"  # mimo-v2.5: input_local_transformer grouping size
+        CODEBOOK_SIZE       = "clip.audio.codebook_size"
+        CODEBOOK_DIM        = "clip.audio.codebook_dim"
+        TOKEN_OFFSET        = "clip.audio.token_offset"
+        SAMPLE_RATE         = "clip.audio.sample_rate"
+        HOP_LENGTH          = "clip.audio.hop_length"
+        DOWNSAMPLE_RATIOS   = "clip.audio.downsample_ratios"
+        RESIDUAL_BLOCK_COUNT = "clip.audio.residual_block_count"
+        DILATION_GROWTH_RATE = "clip.audio.dilation_growth_rate"
+        LSTM_BLOCK_COUNT     = "clip.audio.lstm_block_count"
 
         class Attention:
             HEAD_COUNT      = "clip.audio.attention.head_count"
@@ -5188,6 +5205,8 @@ class VisionProjectorType:
     MIMO_AUDIO     = "mimo_audio"
     GRANITE4_VISION = "granite4_vision"
     MUSE_GLIMMER   = "muse-glimmer"
+    APERTUS_VISION = "apertus_vision"
+    APERTUS_AUDIO  = "apertus_audio"
 
 
 # Items here are (block size, type size)

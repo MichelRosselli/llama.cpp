@@ -683,6 +683,9 @@ class GGUFWriter:
     def add_vocab_size(self, size: int) -> None:
         self.add_uint32(Keys.LLM.VOCAB_SIZE.format(arch=self.arch), size)
 
+    def add_vocab_size_out(self, size: int) -> None:
+        self.add_uint32(Keys.LLM.VOCAB_SIZE_OUT.format(arch=self.arch), size)
+
     def add_context_length(self, length: int) -> None:
         self.add_uint32(Keys.LLM.CONTEXT_LENGTH.format(arch=self.arch), length)
 
@@ -1347,6 +1350,27 @@ class GGUFWriter:
     def add_vision_image_grid_pinpoints(self, layers: Sequence[Sequence[int]]) -> None:
         self.add_array(Keys.ClipVision.IMAGE_GRID_PINPOINTS, layers)
 
+    def add_vision_codebook_size(self, value: int) -> None:
+        self.add_uint32(Keys.ClipVision.CODEBOOK_SIZE, value)
+
+    def add_vision_codebook_dim(self, value: int) -> None:
+        self.add_uint32(Keys.ClipVision.CODEBOOK_DIM, value)
+
+    def add_vision_token_offset(self, value: int) -> None:
+        self.add_uint32(Keys.ClipVision.TOKEN_OFFSET, value)
+
+    def add_vision_spatial_factor(self, value: int) -> None:
+        self.add_uint32(Keys.ClipVision.SPATIAL_FACTOR, value)
+
+    def add_vision_channel_multipliers(self, values: Sequence[int]) -> None:
+        self.add_array(Keys.ClipVision.CHANNEL_MULTIPLIERS, values)
+
+    def add_vision_residual_block_count(self, value: int) -> None:
+        self.add_uint32(Keys.ClipVision.RESIDUAL_BLOCK_COUNT, value)
+
+    def add_vision_attention_levels(self, values: Sequence[int]) -> None:
+        self.add_array(Keys.ClipVision.ATTENTION_LEVELS, values)
+
     def add_vision_sam_layers_count(self, value: int) -> None:
         self.add_uint32(Keys.ClipVision.SAM.BLOCK_COUNT, value)
 
@@ -1452,6 +1476,33 @@ class GGUFWriter:
 
     def add_gen_audio_attention_layernorm_eps(self, value: float) -> None:
         self.add_float32(Keys.ClipGenAudio.Attention.LAYERNORM_EPS, value)
+
+    def add_audio_codebook_size(self, value: int) -> None:
+        self.add_uint32(Keys.ClipAudio.CODEBOOK_SIZE, value)
+
+    def add_audio_codebook_dim(self, value: int) -> None:
+        self.add_uint32(Keys.ClipAudio.CODEBOOK_DIM, value)
+
+    def add_audio_token_offset(self, value: int) -> None:
+        self.add_uint32(Keys.ClipAudio.TOKEN_OFFSET, value)
+
+    def add_audio_sample_rate(self, value: int) -> None:
+        self.add_uint32(Keys.ClipAudio.SAMPLE_RATE, value)
+
+    def add_audio_hop_length(self, value: int) -> None:
+        self.add_uint32(Keys.ClipAudio.HOP_LENGTH, value)
+
+    def add_audio_downsample_ratios(self, values: Sequence[int]) -> None:
+        self.add_array(Keys.ClipAudio.DOWNSAMPLE_RATIOS, values)
+
+    def add_audio_residual_block_count(self, value: int) -> None:
+        self.add_uint32(Keys.ClipAudio.RESIDUAL_BLOCK_COUNT, value)
+
+    def add_audio_dilation_growth_rate(self, value: int) -> None:
+        self.add_uint32(Keys.ClipAudio.DILATION_GROWTH_RATE, value)
+
+    def add_audio_lstm_block_count(self, value: int) -> None:
+        self.add_uint32(Keys.ClipAudio.LSTM_BLOCK_COUNT, value)
 
     def add_xielu_alpha_p(self, values: Sequence[float]):
         self.add_array(Keys.xIELU.ALPHA_P, values)
