@@ -62,6 +62,13 @@
 #define KEY_PROJ_SAMPLE_WINDOW_SIDE "clip.vision.projector.window_side"
 #define KEY_PROJ_SPATIAL_OFFSETS    "clip.vision.projector.spatial_offsets"
 #define KEY_SPATIAL_MERGE_SIZE      "clip.vision.spatial_merge_size"
+#define KEY_V_CODEBOOK_SIZE         "clip.vision.codebook_size"
+#define KEY_V_CODEBOOK_DIM          "clip.vision.codebook_dim"
+#define KEY_V_TOKEN_OFFSET          "clip.vision.token_offset"
+#define KEY_V_SPATIAL_FACTOR        "clip.vision.spatial_factor"
+#define KEY_V_CHANNEL_MULTIPLIERS   "clip.vision.channel_multipliers"
+#define KEY_V_RESIDUAL_BLOCK_COUNT  "clip.vision.residual_block_count"
+#define KEY_V_ATTENTION_LEVELS      "clip.vision.attention_levels"
 
 #define KEY_MM_PATCH_MERGE_TYPE    "clip.vision.mm_patch_merge_type"
 #define KEY_IMAGE_GRID_PINPOINTS   "clip.vision.image_grid_pinpoints"
@@ -391,6 +398,18 @@
 #define TN_CONV_NORM_MEAN        "%s.blk.%d.conv_norm_mean"
 #define TN_CONV_NORM_VAR         "%s.blk.%d.conv_norm_var"
 
+// Apertus discrete media tokenizers
+#define TN_APERTUS_V_CONV_IN       "v.encoder.conv_in.%s"
+#define TN_APERTUS_V_CONV_OUT      "v.encoder.conv_out.%s"
+#define TN_APERTUS_V_NORM_OUT      "v.encoder.norm_out.%s"
+#define TN_APERTUS_V_DOWN_BLOCK    "v.encoder.down.%d.block.%d.%s.%s"
+#define TN_APERTUS_V_DOWN_ATTN     "v.encoder.down.%d.attn.%d.%s.%s"
+#define TN_APERTUS_V_DOWNSAMPLE    "v.encoder.down.%d.downsample.conv.%s"
+#define TN_APERTUS_V_MID_BLOCK     "v.encoder.mid.block_%d.%s.%s"
+#define TN_APERTUS_V_MID_ATTN      "v.encoder.mid.attn_1.%s.%s"
+#define TN_APERTUS_V_QUANT_CONV    "v.quant_conv.%s"
+#define TN_APERTUS_V_CODEBOOK      "v.codebook.weight"
+
 // align x to upper multiple of n
 #define CLIP_ALIGN(x, n) ((((x) + (n) - 1) / (n)) * (n))
 
@@ -456,6 +475,7 @@ enum projector_type {
     PROJECTOR_TYPE_QWEN3TTS_SPKENC,
     PROJECTOR_TYPE_QWEN3TTS_GEN,
     PROJECTOR_TYPE_MUSE_GLIMMER,
+    PROJECTOR_TYPE_APERTUS_VISION,
     PROJECTOR_TYPE_UNKNOWN,
 };
 
@@ -516,6 +536,7 @@ static std::map<projector_type, std::string> PROJECTOR_TYPE_NAMES = {
     { PROJECTOR_TYPE_QWEN3TTS_SPKENC,   "qwen3tts_spkenc"},
     { PROJECTOR_TYPE_QWEN3TTS_GEN,      "qwen3tts_gen"},
     { PROJECTOR_TYPE_MUSE_GLIMMER,      "muse-glimmer"},
+    { PROJECTOR_TYPE_APERTUS_VISION,    "apertus_vision"},
 };
 
 static projector_type clip_projector_type_from_string(const std::string & str) {

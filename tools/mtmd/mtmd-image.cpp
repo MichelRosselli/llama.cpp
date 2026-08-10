@@ -71,6 +71,9 @@ struct img_tool {
                 case RESIZE_ALGO_LANCZOS:
                     resize_lanczos_pillow(src, dst, target_resolution.width, target_resolution.height);
                     break;
+                case RESIZE_ALGO_BICUBIC_TORCHVISION:
+                    resize_bicubic_torchvision(src, dst, target_resolution.width, target_resolution.height);
+                    break;
                 default:
                     throw std::runtime_error("Unsupported resize algorithm");
             }
@@ -102,6 +105,9 @@ struct img_tool {
                     break;
                 case RESIZE_ALGO_LANCZOS:
                     resize_lanczos_pillow(src, resized_image, new_width, new_height);
+                    break;
+                case RESIZE_ALGO_BICUBIC_TORCHVISION:
+                    resize_bicubic_torchvision(src, resized_image, new_width, new_height);
                     break;
                 default:
                     throw std::runtime_error("Unsupported resize algorithm");
@@ -347,12 +353,23 @@ private:
     // 2. Pre-computes normalized filter coefficients for each output pixel
     // 3. Fixed-point integer arithmetic (22 fractional bits) for speed and determinism
     static bool resize_bicubic_pillow(const clip_image_u8 & img, clip_image_u8 & dst, int target_width, int target_height) {
-        return resize_pillow(img, dst, target_width, target_height, /*use_lanczos=*/false);
+        return resize_pillow(img, dst, target_width, target_height,
+                             /*use_lanczos=*/false, /*cubic_coefficient=*/-0.5,
+                             /*torchvision_uint8=*/false);
+    }
+
+    // Torchvision's antialiased uint8 bicubic path uses the Keys cubic kernel and dynamic int16 weights.
+    static bool resize_bicubic_torchvision(const clip_image_u8 & img, clip_image_u8 & dst, int target_width, int target_height) {
+        return resize_pillow(img, dst, target_width, target_height,
+                             /*use_lanczos=*/false, /*cubic_coefficient=*/-0.5,
+                             /*torchvision_uint8=*/true);
     }
 
     // Lanczos-3 (support radius 3), matches Pillow's Image.LANCZOS
     static bool resize_lanczos_pillow(const clip_image_u8 & img, clip_image_u8 & dst, int target_width, int target_height) {
-        return resize_pillow(img, dst, target_width, target_height, /*use_lanczos=*/true);
+        return resize_pillow(img, dst, target_width, target_height,
+                             /*use_lanczos=*/true, /*cubic_coefficient=*/-0.5,
+                             /*torchvision_uint8=*/false);
     }
 
     static bool resize_pillow(
@@ -360,7 +377,9 @@ private:
             clip_image_u8 & dst,
             int target_width,
             int target_height,
-            bool use_lanczos) {
+            bool use_lanczos,
+            double cubic_coefficient,
+            bool torchvision_uint8) {
         // Fixed-point precision: 22 bits = 32 (int32_t) - 8 (uint8_t pixels) - 2 (headroom for accumulation)
         // This allows encoding fractional weights as integers: weight * 2^22
         const int PRECISION_BITS = 32 - 8 - 2;
@@ -368,7 +387,7 @@ private:
         // Resample filter: Lanczos-3 (support [-3, 3]) or bicubic with a = -0.5 (support [-2, 2])
         // Note: GGML/PyTorch bicubic uses a = -0.75, Pillow uses a = -0.5
         // Returns filter weight for distance x from pixel center
-        auto resample_filter = [use_lanczos](double x) -> double {
+        auto resample_filter = [use_lanczos, cubic_coefficient](double x) -> double {
             if (use_lanczos) {
                 if (-3.0 <= x && x < 3.0) {
                     auto sinc = [](double v) {
@@ -383,7 +402,7 @@ private:
                 return 0.0;
             }
 
-            constexpr double a = -0.5;
+            const double a = cubic_coefficient;
             if (x < 0.0) {
                 x = -x;
             }
@@ -419,7 +438,8 @@ private:
         //
         // Returns: kernel size (ksize) - number of input pixels that contribute to each output pixel
         auto precompute_weights = [&](int inSize, int outSize,
-                                     std::vector<int> & bounds, std::vector<int32_t> & weights) -> int {
+                                     std::vector<int> & bounds, std::vector<int32_t> & weights,
+                                     unsigned int & weights_precision) -> int {
             GGML_ASSERT(inSize > 0 && outSize > 0);
             double support, scale, filterscale;
             double center, ww, ss;
@@ -439,6 +459,7 @@ private:
 
             std::vector<double> pre_weights(outSize * ksize);  // Temporary weights
             bounds.resize(outSize * 2);
+            double wt_max = 0.0;
 
 
             // For each output pixel, compute its filter coefficients
@@ -474,6 +495,7 @@ private:
                     if (ww != 0.0) {
                         pre_weights[xx * ksize + x] /= ww;
                     }
+                    wt_max = std::max(wt_max, pre_weights[xx * ksize + x]);
                 }
 
                 // Zero-pad remaining kernel positions
@@ -486,13 +508,27 @@ private:
                 bounds[xx * 2 + 1] = xmax;
             }
 
-            // Convert floating-point coefficients to fixed-point integers
-            // Formula: int32 = round(float * 2^PRECISION_BITS)
+            weights_precision = PRECISION_BITS;
+            if (torchvision_uint8) {
+                for (weights_precision = 0; weights_precision < 22; ++weights_precision) {
+                    const int next_value = (int) (0.5 + wt_max * (1 << (weights_precision + 1)));
+                    if (next_value >= (1 << 15)) {
+                        break;
+                    }
+                }
+            }
+
+            // Convert floating-point coefficients to fixed-point integers.
             weights.resize(outSize * ksize);
 
-            const double fxp_scale = std::ldexp(1.0, PRECISION_BITS); // 1.0 * 2^PRECISION_BITS
+            const double fxp_scale = std::ldexp(1.0, weights_precision);
 
             for (int i = 0; i < outSize * ksize; i++) {
+                if (torchvision_uint8) {
+                    const double value = pre_weights[i] * fxp_scale;
+                    weights[i] = value < 0.0 ? (int) (value - 0.5) : (int) (value + 0.5);
+                    continue;
+                }
                 if (use_lanczos) {
                     // Pillow adds +/- 0.5 then truncates toward zero; std::round would round twice
                     const double rounded = pre_weights[i] * fxp_scale + (pre_weights[i] < 0 ? -0.5 : 0.5);
@@ -519,7 +555,8 @@ private:
         // Resizes width from imIn to out_nx, preserving height
         auto resample_horizontal = [&](const clip_image_u8 & imIn, clip_image_u8 & imOut,
                                        int out_nx,
-                                       int ksize, const std::vector<int> & bounds, const std::vector<int32_t> & weights) {
+                                       int ksize, const std::vector<int> & bounds, const std::vector<int32_t> & weights,
+                                       unsigned int weights_precision) {
             const int in_ny = imIn.get_size().height;
             imOut.set_size({out_nx, in_ny}, false);
 
@@ -532,9 +569,9 @@ private:
                     int xcnt = bounds[xx * 2 + 1];  // Number of input pixels
 
                     // Initialize accumulators for RGB channels with rounding bias (0.5 in fixed-point)
-                    int32_t ss0 = 1 << (PRECISION_BITS - 1);
-                    int32_t ss1 = 1 << (PRECISION_BITS - 1);
-                    int32_t ss2 = 1 << (PRECISION_BITS - 1);
+                    int32_t ss0 = 1 << (weights_precision - 1);
+                    int32_t ss1 = 1 << (weights_precision - 1);
+                    int32_t ss2 = 1 << (weights_precision - 1);
 
                     // Convolve: sum weighted input pixels
                     for (int x = 0; x < xcnt; x++) {
@@ -545,9 +582,9 @@ private:
                     }
 
                     // Convert back from fixed-point (divide by 2^PRECISION_BITS) and clamp to [0,255]
-                    imOut.set_pixel(xx, yy, {clip8(ss0 >> PRECISION_BITS),
-                                             clip8(ss1 >> PRECISION_BITS),
-                                             clip8(ss2 >> PRECISION_BITS)});
+                    imOut.set_pixel(xx, yy, {clip8(ss0 >> weights_precision),
+                                             clip8(ss1 >> weights_precision),
+                                             clip8(ss2 >> weights_precision)});
                 }
             }
         };
@@ -556,7 +593,8 @@ private:
         // Resizes height from imIn to out_ny, preserving width
         auto resample_vertical = [&](const clip_image_u8 & imIn, clip_image_u8 & imOut,
                                      int out_ny,
-                                     int ksize, const std::vector<int> & bounds, const std::vector<int32_t> & weight) {
+                                     int ksize, const std::vector<int> & bounds, const std::vector<int32_t> & weight,
+                                     unsigned int weights_precision) {
             const int in_nx = imIn.get_size().width;
             imOut.set_size({in_nx, out_ny}, false);
 
@@ -569,9 +607,9 @@ private:
                 // Process each column in this output row
                 for (int xx = 0; xx < in_nx; xx++) {
                     // Initialize accumulators for RGB channels with rounding bias
-                    int32_t ss0 = 1 << (PRECISION_BITS - 1);
-                    int32_t ss1 = 1 << (PRECISION_BITS - 1);
-                    int32_t ss2 = 1 << (PRECISION_BITS - 1);
+                    int32_t ss0 = 1 << (weights_precision - 1);
+                    int32_t ss1 = 1 << (weights_precision - 1);
+                    int32_t ss2 = 1 << (weights_precision - 1);
 
                     // Convolve: sum weighted input pixels vertically
                     for (int y = 0; y < ycnt; y++) {
@@ -582,9 +620,9 @@ private:
                     }
 
                     // Convert back from fixed-point and clamp to [0,255]
-                    imOut.set_pixel(xx, yy, {clip8(ss0 >> PRECISION_BITS),
-                                             clip8(ss1 >> PRECISION_BITS),
-                                             clip8(ss2 >> PRECISION_BITS)});
+                    imOut.set_pixel(xx, yy, {clip8(ss0 >> weights_precision),
+                                             clip8(ss1 >> weights_precision),
+                                             clip8(ss2 >> weights_precision)});
                 }
             }
         };
@@ -600,27 +638,29 @@ private:
         std::vector<int> bounds_horiz, bounds_vert;
         std::vector<int32_t> weights_horiz, weights_vert;
         int ksize_horiz = 0, ksize_vert = 0;
+        unsigned int precision_horiz = PRECISION_BITS;
+        unsigned int precision_vert = PRECISION_BITS;
 
         if (need_horizontal) {
-            ksize_horiz = precompute_weights(src_width, target_width, bounds_horiz, weights_horiz);
+            ksize_horiz = precompute_weights(src_width, target_width, bounds_horiz, weights_horiz, precision_horiz);
         }
 
         if (need_vertical) {
-            ksize_vert = precompute_weights(src_height, target_height, bounds_vert, weights_vert);
+            ksize_vert = precompute_weights(src_height, target_height, bounds_vert, weights_vert, precision_vert);
         }
 
         // Perform two-pass resampling
         if (need_horizontal && need_vertical) {
             // Both horizontal and vertical
             clip_image_u8 temp;
-            resample_horizontal(img, temp, target_width, ksize_horiz, bounds_horiz, weights_horiz);
-            resample_vertical(temp, dst, target_height, ksize_vert, bounds_vert, weights_vert);
+            resample_horizontal(img, temp, target_width, ksize_horiz, bounds_horiz, weights_horiz, precision_horiz);
+            resample_vertical(temp, dst, target_height, ksize_vert, bounds_vert, weights_vert, precision_vert);
         } else if (need_horizontal) {
             // Only horizontal
-            resample_horizontal(img, dst, target_width, ksize_horiz, bounds_horiz, weights_horiz);
+            resample_horizontal(img, dst, target_width, ksize_horiz, bounds_horiz, weights_horiz, precision_horiz);
         } else if (need_vertical) {
             // Only vertical
-            resample_vertical(img, dst, target_height, ksize_vert, bounds_vert, weights_vert);
+            resample_vertical(img, dst, target_height, ksize_vert, bounds_vert, weights_vert, precision_vert);
         } else {
             // No resizing needed - direct copy
             dst.set_size(img.get_size(), img.is_placeholder());
@@ -905,6 +945,49 @@ clip_image_size mtmd_image_preprocessor_llava_uhd::get_best_grid(const int max_s
     return best_grid;
 }
 
+clip_image_size mtmd_apertus_image_calc_size(
+        clip_image_size original_size,
+        int spatial_factor,
+        int min_pixels,
+        int max_pixels) {
+    GGML_ASSERT(original_size.width > 0 && original_size.height > 0);
+    GGML_ASSERT(spatial_factor > 0);
+    GGML_ASSERT(min_pixels > 0 && max_pixels >= min_pixels);
+
+    const int64_t original_area = (int64_t) original_size.width * original_size.height;
+    const int64_t target_area = std::clamp(original_area, (int64_t) min_pixels, (int64_t) max_pixels);
+    const double aspect_ratio = (double) original_size.width / original_size.height;
+
+    int target_height = (int) std::sqrt(target_area / aspect_ratio);
+    int target_width = (int) (target_height * aspect_ratio);
+    target_height = ((target_height + spatial_factor / 2) / spatial_factor) * spatial_factor;
+    target_width = ((target_width + spatial_factor / 2) / spatial_factor) * spatial_factor;
+
+    return {
+        std::max(target_width, spatial_factor),
+        std::max(target_height, spatial_factor),
+    };
+}
+
+clip_image_f32 mtmd_apertus_image_prepare(
+        const clip_image_u8 & image,
+        clip_image_size target_size) {
+    clip_image_u8 resized_image;
+    img_tool::resize(image, resized_image, target_size,
+                     RESIZE_ALGO_BICUBIC_TORCHVISION, PAD_NONE);
+
+    std::vector<float> normalized_pixels;
+    normalized_pixels.reserve(resized_image.n_elements());
+    for (uint8_t pixel : resized_image.get_ro_buf()) {
+        normalized_pixels.push_back(((float) pixel - 127.5f) / 127.5f);
+    }
+
+    clip_image_f32 normalized_image;
+    normalized_image.set_size(target_size, false, false);
+    normalized_image.cpy_buf(normalized_pixels);
+    return normalized_image;
+}
+
 //
 // mtmd_image_preprocessor_fixed_size
 //
@@ -945,6 +1028,26 @@ mtmd_image_preproc_out mtmd_image_preprocessor_dyn_size::preprocess(const clip_i
                         hparams.image_pad_color);
     mtmd_image_preproc_out output;
     output.append(hparams, resized_image, true);
+    return output;
+}
+
+//
+// mtmd_image_preprocessor_apertus
+//
+
+mtmd_image_preproc_out mtmd_image_preprocessor_apertus::preprocess(const clip_image_u8 & img) {
+    GGML_ASSERT(hparams.image_min_pixels > 0 && hparams.image_max_pixels > 0);
+    GGML_ASSERT(hparams.vision_spatial_factor > 0);
+
+    const clip_image_size target_size = mtmd_apertus_image_calc_size(
+        img.get_size(),
+        hparams.vision_spatial_factor,
+        hparams.image_min_pixels,
+        hparams.image_max_pixels);
+    clip_image_f32 normalized_image = mtmd_apertus_image_prepare(img, target_size);
+
+    mtmd_image_preproc_out output;
+    output.append(hparams, normalized_image, false);
     return output;
 }
 

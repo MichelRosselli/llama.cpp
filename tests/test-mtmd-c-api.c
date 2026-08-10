@@ -1,6 +1,8 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+
+#undef NDEBUG
 #include <assert.h>
 
 #include "mtmd.h"
@@ -49,17 +51,10 @@ int main(void) {
         } else if (type == MTMD_INPUT_CHUNK_TYPE_IMAGE) {
             const mtmd_image_tokens * image_tokens = mtmd_input_chunk_get_tokens_image(chunk);
             size_t n_tokens = mtmd_image_tokens_get_n_tokens(image_tokens);
-            // get position of the last token, which should be (nx - 1, ny - 1)
-            struct mtmd_decoder_pos pos = mtmd_image_tokens_get_decoder_pos(image_tokens, 0, n_tokens - 1);
-            size_t nx = pos.x + 1;
-            size_t ny = pos.y + 1;
             const char * id = mtmd_image_tokens_get_id(image_tokens);
             assert(n_tokens > 0);
-            assert(nx > 0);
-            assert(ny > 0);
             assert(id != NULL);
             printf("    Image chunk with %zu tokens\n", n_tokens);
-            printf("    Image size: %zu x %zu\n", nx, ny);
             printf("    Image ID: %s\n", id);
         }
     }

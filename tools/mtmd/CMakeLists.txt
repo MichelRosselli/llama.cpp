@@ -28,6 +28,7 @@ add_library(mtmd
             clip-graph.h
             models/models.h
             models/cogvlm.cpp
+            models/apertus-vision.cpp
             models/conformer.cpp
             models/dotsocr.cpp
             models/exaone4_5.cpp

@@ -742,7 +742,10 @@ struct server_slot {
         auto try_decode = [&]() -> int32_t {
             if (mbatch) {
                 float * embd = mtmd_batch_get_output_embd(mbatch.get(), chunk.get());
-                if (embd) {
+                size_t n_media_tokens = 0;
+                const llama_token * media_tokens = mtmd_batch_get_output_tokens(
+                    mbatch.get(), chunk.get(), &n_media_tokens);
+                if (embd || media_tokens) {
                     void * cb_data = spec;
                     static auto cb = [](llama_batch batch, void * user_data) {
                         common_speculative * spec = static_cast<common_speculative *>(user_data);
@@ -753,18 +756,24 @@ struct server_slot {
                     };
 
                     llama_pos new_n_past; // unused for now
-                    res = mtmd_helper_decode_image_chunk(
-                        mctx,
-                        ctx_tgt,
-                        chunk.get(),
-                        embd,
-                        prompt.tokens.pos_next(),
-                        id,
-                        llama_n_batch(ctx_tgt),
-                        &new_n_past,
-                        cb,
-                        cb_data
-                    );
+                    if (media_tokens) {
+                        res = mtmd_helper_decode_tokens_chunk(
+                            mctx, ctx_tgt, chunk.get(), media_tokens, n_media_tokens,
+                            prompt.tokens.pos_next(), id, llama_n_batch(ctx_tgt), &new_n_past, cb, cb_data);
+                    } else {
+                        res = mtmd_helper_decode_image_chunk(
+                            mctx,
+                            ctx_tgt,
+                            chunk.get(),
+                            embd,
+                            prompt.tokens.pos_next(),
+                            id,
+                            llama_n_batch(ctx_tgt),
+                            &new_n_past,
+                            cb,
+                            cb_data
+                        );
+                    }
                     if (res != 0) {
                         SLT_ERR(*this, "failed to decode mtmd chunk, idx = %zu, res = %d\n", idx, res);
                         return -1;

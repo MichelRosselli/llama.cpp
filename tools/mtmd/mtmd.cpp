@@ -26,7 +26,7 @@
 #include <vector>
 
 // remember to bump this if the serialization format changes
-#define MTMD_SERIALIZATION_VERSION 1
+#define MTMD_SERIALIZATION_VERSION 2
 
 struct mtmd_serialization {
     // note: using 64-bit here for future-proofing
@@ -96,6 +96,25 @@ std::string mtmd_serialization::read<std::string>() {
     std::string str(data.data() + read_pos, len);
     read_pos += len;
     return str;
+}
+
+static void mtmd_serialize_tokens(mtmd_serialization & ser, const std::vector<llama_token> & tokens) {
+    ser.write<uint64_t>(tokens.size());
+    for (llama_token token : tokens) {
+        ser.write<int32_t>(token);
+    }
+}
+
+static std::vector<llama_token> mtmd_deserialize_tokens(mtmd_serialization & ser) {
+    const uint64_t size = ser.read<uint64_t>();
+    if (size > (ser.data.size() - ser.read_pos) / sizeof(int32_t)) {
+        throw std::runtime_error("token count exceeds buffer size");
+    }
+    std::vector<llama_token> tokens(size);
+    for (llama_token & token : tokens) {
+        token = ser.read<int32_t>();
+    }
+    return tokens;
 }
 
 // only mtmd.cpp needs these, so they're implemented here rather than in clip-impl.h
@@ -207,7 +226,13 @@ struct mtmd_image_tokens {
     mtmd_pos_type pos = MTMD_POS_TYPE_NORMAL;
     uint32_t image_idx = 0; // 0-based position of this image among image chunks in the prompt(used by pos == MTMD_POS_TYPE_HUNYUANVL)
     uint32_t n_temporal_merge = 1; // for qwen-vl style temporal merge
+    std::vector<llama_token> token_prefix;
+    std::vector<llama_token> token_row_separator;
+    std::vector<llama_token> token_suffix;
     uint32_t n_tokens() const {
+        if (!token_prefix.empty() || !token_suffix.empty()) {
+            return token_prefix.size() + nx * ny + token_row_separator.size() * (ny - 1) + token_suffix.size();
+        }
         if (pos == MTMD_POS_TYPE_HUNYUANVL) {
             // [BOI] [row0 tokens + newline] ... [row(ny-1) tokens + newline] [EOI]
             return (nx + 1) * ny + 2;
@@ -248,6 +273,9 @@ struct mtmd_image_tokens {
             pos,
             image_idx,
             n_temporal_merge,
+            token_prefix,
+            token_row_separator,
+            token_suffix,
             batch_f32.clone(),
             id
         };
@@ -260,6 +288,9 @@ struct mtmd_image_tokens {
         ser.write((uint32_t)pos);
         ser.write(image_idx);
         ser.write(n_temporal_merge);
+        mtmd_serialize_tokens(ser, token_prefix);
+        mtmd_serialize_tokens(ser, token_row_separator);
+        mtmd_serialize_tokens(ser, token_suffix);
         ser.write(id);
         batch_f32.serialize(ser);
     }
@@ -273,6 +304,9 @@ struct mtmd_image_tokens {
         pos = (mtmd_pos_type)pos_raw;
         image_idx = ser.read<uint32_t>();
         n_temporal_merge = ser.read<uint32_t>();
+        token_prefix = mtmd_deserialize_tokens(ser);
+        token_row_separator = mtmd_deserialize_tokens(ser);
+        token_suffix = mtmd_deserialize_tokens(ser);
         id = ser.read<std::string>();
         batch_f32.deserialize(ser);
     }
@@ -414,6 +448,7 @@ struct mtmd_batch {
     mtmd_context * ctx;
     std::vector<const mtmd_input_chunk *> entries;
     std::vector<float> output_embd; // aggregated output embedding for the whole batch
+    std::vector<llama_token> output_tokens; // aggregated decoder token IDs for the whole batch
     mtmd_batch(mtmd_context * ctx): ctx(ctx) {}
     int32_t n_tokens() const {
         int32_t n = 0;
@@ -473,6 +508,7 @@ struct mtmd_context {
     struct clip_ctx * ctx_v; // vision
     struct clip_ctx * ctx_a; // audio
     std::vector<float> out_embd; // image embedding vector
+    std::vector<llama_token> out_tokens; // decoder token IDs produced by a discrete media encoder
 
     // generation context
     struct clip_ctx * ctx_gen_a; // audio
@@ -578,8 +614,8 @@ struct mtmd_context {
             throw std::runtime_error(string_format("Failed to load CLIP model from %s\n", mmproj_fname));
         }
 
-        // if both vision and audio mmproj are present, we need to validate their n_embd
-        if (ctx_v && ctx_a) {
+        // Compare only projectors that produce embeddings.
+        if (ctx_v && ctx_a && !clip_outputs_tokens(ctx_v) && !clip_outputs_tokens(ctx_a)) {
             int n_embd_v = clip_n_mmproj_embd(ctx_v);
             int n_embd_a = clip_n_mmproj_embd(ctx_a);
             if (n_embd_v != n_embd_a) {
@@ -589,15 +625,20 @@ struct mtmd_context {
             }
         }
 
-        // since we already validate n_embd of vision and audio mmproj,
-        // we can safely assume that they are the same
-        int n_embd_clip = clip_n_mmproj_embd(ctx_v ? ctx_v : ctx_a);
-        if (n_embd_text > 0 && n_embd_text != n_embd_clip) {
-            throw std::runtime_error(string_format(
-                "mismatch between text model (n_embd = %d) and mmproj (n_embd = %d)\n"
-                "hint: you may be using wrong mmproj\n",
-                n_embd_text, n_embd_clip));
-        }
+        auto validate_embedding_width = [&](clip_ctx * ctx_clip, const char * modality) {
+            if (!ctx_clip || clip_outputs_tokens(ctx_clip)) {
+                return;
+            }
+            const int n_embd_clip = clip_n_mmproj_embd(ctx_clip);
+            if (n_embd_text > 0 && n_embd_text != n_embd_clip) {
+                throw std::runtime_error(string_format(
+                    "mismatch between text model (n_embd = %d) and %s mmproj (n_embd = %d)\n"
+                    "hint: you may be using wrong mmproj\n",
+                    n_embd_text, modality, n_embd_clip));
+            }
+        };
+        validate_embedding_width(ctx_v, "vision");
+        validate_embedding_width(ctx_a, "audio");
         if (ctx_gen_a) {
             int n_embd_gen = clip_n_mmproj_embd(ctx_gen_a);
             if (n_embd_text > 0 && n_embd_text != n_embd_gen) {
@@ -691,6 +732,10 @@ struct mtmd_context {
                     img_beg = "<|vision_start|>";
                     img_end = "<|vision_end|>";
                     image_preproc = std::make_unique<mtmd_image_preprocessor_dyn_size>(ctx_v);
+                } break;
+            case PROJECTOR_TYPE_APERTUS_VISION:
+                {
+                    image_preproc = std::make_unique<mtmd_image_preprocessor_apertus>(ctx_v);
                 } break;
             case PROJECTOR_TYPE_MINIMAX_M3:
                 {
@@ -1466,6 +1511,26 @@ struct mtmd_tokenizer {
                     image_tokens->nx = n_tokens;
                     image_tokens->ny = 1;
                 }
+                if (ctx->proj_type_v() == PROJECTOR_TYPE_APERTUS_VISION) {
+                    if (preproc_out.entries.size() != 1) {
+                        throw std::runtime_error("Apertus vision does not support batched media encoding");
+                    }
+                    const auto & image = preproc_out.entries[0];
+                    const int spatial_factor = clip_get_hparams(ctx->ctx_v)->vision_spatial_factor;
+                    image_tokens->nx = image.nx() / spatial_factor;
+                    image_tokens->ny = image.ny() / spatial_factor;
+
+                    auto append_tokens = [&](std::vector<llama_token> & dst, const std::string & value, bool special) {
+                        auto tokens = mtmd_tokenize_text_internal(vocab, value, false, special);
+                        dst.insert(dst.end(), tokens.begin(), tokens.end());
+                    };
+                    append_tokens(image_tokens->token_prefix, "<|img_start|>", true);
+                    append_tokens(image_tokens->token_prefix,
+                                  std::to_string(image_tokens->ny) + "*" + std::to_string(image_tokens->nx), false);
+                    append_tokens(image_tokens->token_prefix, "<|img_token_start|>", true);
+                    append_tokens(image_tokens->token_row_separator, "<|img_end_of_row|>", true);
+                    append_tokens(image_tokens->token_suffix, "<|img_end|>", true);
+                }
                 image_tokens->pos = ctx->pos_type;
                 // HunyuanVL wraps the image grid with BOI/EOI and adds one newline per row,
                 // and uses XD-RoPE (dim-3 = image index). Override the position type so that
@@ -1700,7 +1765,8 @@ int32_t mtmd_tokenize(mtmd_context * ctx,
     }
 }
 
-static int32_t mtmd_encode_impl(mtmd_context * ctx, const mtmd_image_tokens * image_tokens, std::vector<float> & out_embd) {
+static int32_t mtmd_encode_impl(mtmd_context * ctx, const mtmd_image_tokens * image_tokens,
+                                std::vector<float> & out_embd, std::vector<llama_token> & out_tokens) {
     clip_ctx * ctx_clip = ctx->ctx_v;
     if (!ctx_clip) {
         LOG_ERR("%s: this API does not support non-vision input, please use mtmd_encode_chunk instead\n", __func__);
@@ -1709,7 +1775,11 @@ static int32_t mtmd_encode_impl(mtmd_context * ctx, const mtmd_image_tokens * im
 
     int n_embd_out = ctx->n_embd_out();
     auto n_tokens_out = image_tokens->n_tokens();
-    out_embd.resize((size_t)n_embd_out * n_tokens_out);
+    out_embd.clear();
+    out_tokens.clear();
+    if (!clip_outputs_tokens(ctx_clip)) {
+        out_embd.resize((size_t)n_embd_out * n_tokens_out);
+    }
 
     if (image_tokens->is_placeholder()) {
         LOG_ERR("%s: image tokens batch is placeholder\n", __func__);
@@ -1720,12 +1790,34 @@ static int32_t mtmd_encode_impl(mtmd_context * ctx, const mtmd_image_tokens * im
         ctx_clip,
         ctx->n_threads,
         &image_tokens->batch_f32,
-        out_embd);
+        out_embd,
+        &out_tokens);
+
+    if (ok && clip_outputs_tokens(ctx_clip)) {
+        const std::vector<llama_token> codes = std::move(out_tokens);
+        out_tokens = image_tokens->token_prefix;
+        out_tokens.reserve(image_tokens->n_tokens());
+        size_t offset = 0;
+        for (uint32_t row = 0; row < image_tokens->ny; ++row) {
+            out_tokens.insert(out_tokens.end(), codes.begin() + offset, codes.begin() + offset + image_tokens->nx);
+            offset += image_tokens->nx;
+            if (row + 1 < image_tokens->ny) {
+                out_tokens.insert(out_tokens.end(), image_tokens->token_row_separator.begin(),
+                                  image_tokens->token_row_separator.end());
+            }
+        }
+        out_tokens.insert(out_tokens.end(), image_tokens->token_suffix.begin(), image_tokens->token_suffix.end());
+        if (offset != codes.size() || out_tokens.size() != image_tokens->n_tokens()) {
+            LOG_ERR("%s: invalid discrete image token layout\n", __func__);
+            return 1;
+        }
+    }
 
     return ok ? 0 : 1;
 }
 
-static int32_t mtmd_encode_chunk_impl(mtmd_context * ctx, const mtmd_input_chunk * chunk, std::vector<float> & out_embd) {
+static int32_t mtmd_encode_chunk_impl(mtmd_context * ctx, const mtmd_input_chunk * chunk,
+                                      std::vector<float> & out_embd, std::vector<llama_token> & out_tokens) {
     if (chunk->type == MTMD_INPUT_CHUNK_TYPE_TEXT) {
         LOG_WRN("mtmd_encode_chunk has no effect for text chunks\n");
         return 0;
@@ -1742,7 +1834,7 @@ static int32_t mtmd_encode_chunk_impl(mtmd_context * ctx, const mtmd_input_chunk
             LOG_ERR("%s: image tokens batch is placeholder\n", __func__);
             return 1;
         }
-        return mtmd_encode_impl(ctx, chunk->tokens_image.get(), out_embd);
+        return mtmd_encode_impl(ctx, chunk->tokens_image.get(), out_embd, out_tokens);
     } else if (chunk->type == MTMD_INPUT_CHUNK_TYPE_AUDIO) {
         if (!ctx->ctx_a) {
             LOG_ERR("%s: model does not support audio input\n", __func__);
@@ -1757,12 +1849,17 @@ static int32_t mtmd_encode_chunk_impl(mtmd_context * ctx, const mtmd_input_chunk
             return 1;
         }
         int n_mmproj_embd = ctx->n_embd_out();
-        out_embd.resize((size_t)chunk->tokens_audio->n_tokens * n_mmproj_embd);
+        out_embd.clear();
+        out_tokens.clear();
+        if (!clip_outputs_tokens(ctx->ctx_a)) {
+            out_embd.resize((size_t)chunk->tokens_audio->n_tokens * n_mmproj_embd);
+        }
         bool ok = clip_image_batch_encode(
             ctx->ctx_a,
             ctx->n_threads,
             &chunk->tokens_audio->batch_f32,
-            out_embd);
+            out_embd,
+            &out_tokens);
         return ok ? 0 : 1;
     }
 
@@ -1773,7 +1870,7 @@ static int32_t mtmd_encode_chunk_impl(mtmd_context * ctx, const mtmd_input_chunk
 int32_t mtmd_encode_chunk(mtmd_context * ctx, const mtmd_input_chunk * chunk) {
     // this is the non-batching version
     try {
-        return mtmd_encode_chunk_impl(ctx, chunk, ctx->out_embd);
+        return mtmd_encode_chunk_impl(ctx, chunk, ctx->out_embd, ctx->out_tokens);
     } catch (const std::exception & e) {
         LOG_ERR("%s: error: %s\n", __func__, e.what());
         return 1;
@@ -1782,7 +1879,7 @@ int32_t mtmd_encode_chunk(mtmd_context * ctx, const mtmd_input_chunk * chunk) {
 
 int32_t mtmd_encode(mtmd_context * ctx, const mtmd_image_tokens * image_tokens) {
     try {
-        return mtmd_encode_impl(ctx, image_tokens, ctx->out_embd);
+        return mtmd_encode_impl(ctx, image_tokens, ctx->out_embd, ctx->out_tokens);
     } catch (const std::exception & e) {
         LOG_ERR("%s: error: %s\n", __func__, e.what());
         return 1;
@@ -1790,7 +1887,12 @@ int32_t mtmd_encode(mtmd_context * ctx, const mtmd_image_tokens * image_tokens) 
 }
 
 float * mtmd_get_output_embd(mtmd_context * ctx) {
-    return ctx->out_embd.data();
+    return ctx->out_embd.empty() ? nullptr : ctx->out_embd.data();
+}
+
+const llama_token * mtmd_get_output_tokens(mtmd_context * ctx, size_t * n_tokens_output) {
+    *n_tokens_output = ctx->out_tokens.size();
+    return ctx->out_tokens.empty() ? nullptr : ctx->out_tokens.data();
 }
 
 //
@@ -2007,7 +2109,8 @@ static int32_t mtmd_batch_encode_impl(mtmd_batch * batch) {
     int32_t res = mtmd_encode_chunk_impl(
         batch->ctx,
         batch_chunk.get(),
-        batch->output_embd);
+        batch->output_embd,
+        batch->output_tokens);
     return res;
 }
 
@@ -2022,7 +2125,6 @@ int32_t mtmd_batch_encode(mtmd_batch * batch) {
 
 float * mtmd_batch_get_output_embd(mtmd_batch * batch, const mtmd_input_chunk * chunk) {
     if (batch->output_embd.empty()) {
-        LOG_ERR("%s: batch has not been encoded yet\n", __func__);
         return nullptr;
     }
     size_t offset = 0;
@@ -2038,6 +2140,25 @@ float * mtmd_batch_get_output_embd(mtmd_batch * batch, const mtmd_input_chunk * 
         }
     }
     return nullptr; // not found
+}
+
+const llama_token * mtmd_batch_get_output_tokens(mtmd_batch * batch,
+                                                  const mtmd_input_chunk * chunk,
+                                                  size_t * n_tokens_output) {
+    *n_tokens_output = 0;
+    if (batch->output_tokens.empty()) {
+        return nullptr;
+    }
+    size_t offset = 0;
+    for (const auto * c : batch->entries) {
+        const size_t n_tokens = mtmd_input_chunk_get_n_tokens(c);
+        if (c == chunk) {
+            *n_tokens_output = n_tokens;
+            return batch->output_tokens.data() + offset;
+        }
+        offset += n_tokens;
+    }
+    return nullptr;
 }
 
 bool mtmd_decode_use_non_causal(const mtmd_context * ctx, const mtmd_input_chunk * chunk) {
@@ -2407,6 +2528,9 @@ mtmd_input_chunks * mtmd_test_create_input_chunks() {
     mtmd_image_tokens_ptr image_tokens(new mtmd_image_tokens);
     image_tokens->nx = 4;
     image_tokens->ny = 4;
+    image_tokens->token_prefix = { 100 };
+    image_tokens->token_row_separator = { 101 };
+    image_tokens->token_suffix = { 102 };
     image_tokens->batch_f32.entries.resize(16);
     image_tokens->id = "image_1";
     mtmd_input_chunk chunk_image{
@@ -2446,14 +2570,25 @@ static void mtmd_debug_encode_impl(mtmd_context * ctx, clip_ctx * ctx_clip, clip
     clip_set_debug_output_embeddings(ctx_clip, true);
     int n_mmproj_embd = clip_n_mmproj_embd(ctx_clip);
     int n_tokens = clip_n_output_tokens(ctx_clip, &image);
-    std::vector<float> embd_output(n_tokens * n_mmproj_embd, 0.0f);
+    std::vector<float> embd_output;
+    std::vector<int32_t> token_output;
+    if (!clip_outputs_tokens(ctx_clip)) {
+        embd_output.resize(n_tokens * n_mmproj_embd, 0.0f);
+    }
     bool ok = clip_image_encode(
         ctx_clip,
         ctx->n_threads,
         &image,
-        embd_output);
+        embd_output,
+        &token_output);
     if (!ok) {
         LOG_ERR("%s: failed to encode image\n", __func__);
+    } else if (!token_output.empty()) {
+        std::string output_tokens;
+        for (int32_t token : token_output) {
+            output_tokens += " " + std::to_string(token);
+        }
+        LOG_INF("%s: output tokens:%s\n", __func__, output_tokens.c_str());
     }
 }
 
