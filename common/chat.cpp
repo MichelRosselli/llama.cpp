@@ -1091,6 +1091,13 @@ std::optional<common_chat_params> common_chat_try_specialized_template(
         const common_chat_template &          tmpl,
         const std::string &                   src,
         autoparser::generation_params & params) {
+    if (src.find("You are Apertus 1.5 Omni") != std::string::npos &&
+        src.find("<|inner_prefix|>") != std::string::npos &&
+        src.find("<|tools_prefix|>") != std::string::npos) {
+        LOG_DBG("Using specialized template: Apertus 1.5\n");
+        return common_chat_params_init_apertus_1_5(tmpl, params);
+    }
+
     // Ministral/Mistral Large 3 - uses special reasoning structure fixes, can't use autoparser
     // Note: Mistral Small 3.2 uses [CALL_ID] which Ministral doesn't have, so we can distinguish them
     if (src.find("[SYSTEM_PROMPT]") != std::string::npos && src.find("[TOOL_CALLS]") != std::string::npos &&
