@@ -464,3 +464,30 @@ class ApertusModel(LlamaModel):
             return
 
         yield from super().modify_tensors(data_torch, name, bid)
+
+
+@ModelBase.register(
+    "Apertus1p5ForConditionalGeneration",
+    "Apertus1p5TextForCausalLM",
+)
+class Apertus1p5Model(ApertusModel):
+    model_arch = gguf.MODEL_ARCH.APERTUS
+
+    def set_vocab(self):
+        super().set_vocab()
+
+        with open(self.dir_model / "tokenizer.json", encoding="utf-8") as f:
+            tokenizer_json = json.load(f)
+        added_tokens = {token["content"]: token["id"] for token in tokenizer_json["added_tokens"]}
+
+        self.gguf_writer.add_eot_token_id(added_tokens["<|assistant_end|>"])
+        self.gguf_writer.add_eom_token_id(added_tokens["<|tools_suffix|>"])
+
+    def set_gguf_parameters(self):
+        super().set_gguf_parameters()
+
+        n_vocab = self.hparams["vocab_size"]
+        n_vocab_out = self.hparams["output_vocab_size"]
+        if not 0 < n_vocab_out <= n_vocab:
+            raise ValueError(f"Invalid output vocabulary size {n_vocab_out} for input vocabulary size {n_vocab}")
+        self.gguf_writer.add_vocab_size_out(n_vocab_out)

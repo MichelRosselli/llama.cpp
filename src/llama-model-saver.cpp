@@ -24,7 +24,6 @@ bool llama_model_saver_supports_arch(llm_arch arch) {
         case LLM_ARCH_T5:
         case LLM_ARCH_EXAONE_MOE:
         case LLM_ARCH_AFMOE:
-        case LLM_ARCH_APERTUS:
         case LLM_ARCH_MIMO2:
         case LLM_ARCH_STEP35:
         case LLM_ARCH_SPARK2_5:
@@ -216,6 +215,9 @@ void llama_model_saver::add_kv_from_model() {
     // add_kv(LLM_KV_GENERAL_SOURCE_HF_REPO,            ???);
 
     add_kv(LLM_KV_VOCAB_SIZE,                        vocab.n_tokens());
+    if (hparams.n_vocab_out_impl > 0) {
+        add_kv(LLM_KV_VOCAB_SIZE_OUT,                hparams.n_vocab_out_impl);
+    }
     add_kv(LLM_KV_CONTEXT_LENGTH,                    hparams.n_ctx_train);
     add_kv(LLM_KV_EMBEDDING_LENGTH,                  hparams.n_embd);
     if (hparams.n_embd_out_impl > 0) {
@@ -431,10 +433,11 @@ void llama_model_saver::add_kv_from_model() {
 
     add_kv(LLM_KV_SHORTCONV_L_CACHE,                 hparams.n_shortconv_l_cache);
 
-    add_kv(LLM_KV_XIELU_ALPHA_N,                     hparams.xielu_alpha_n);
-    add_kv(LLM_KV_XIELU_ALPHA_P,                     hparams.xielu_alpha_p);
-    add_kv(LLM_KV_XIELU_BETA,                        hparams.xielu_beta);
-    add_kv(LLM_KV_XIELU_EPS,                         hparams.xielu_eps);
+    const bool xielu_per_layer = model->arch == LLM_ARCH_APERTUS;
+    add_kv(LLM_KV_XIELU_ALPHA_N,                     hparams.xielu_alpha_n, xielu_per_layer);
+    add_kv(LLM_KV_XIELU_ALPHA_P,                     hparams.xielu_alpha_p, xielu_per_layer);
+    add_kv(LLM_KV_XIELU_BETA,                        hparams.xielu_beta,    xielu_per_layer);
+    add_kv(LLM_KV_XIELU_EPS,                         hparams.xielu_eps,     xielu_per_layer);
 
     add_kv(LLM_KV_ATTN_RES_BLOCK_SIZE,               hparams.attn_res_block_size);
     add_kv(LLM_KV_ACTIVATION_SITU_BETA,              hparams.situ_beta);

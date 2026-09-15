@@ -12,6 +12,9 @@
 #include "../src/llama-model-saver.h"
 
 #include <cinttypes>
+#include <cfloat>
+#include <cmath>
+#include <limits>
 #include <cstddef>
 #include <cstdio>
 #include <cstring>
@@ -79,7 +82,12 @@ static std::vector<llama_token> get_tokens(const uint32_t n_tokens, const uint32
     return ret;
 }
 
-static gguf_context_ptr get_gguf_ctx(const llm_arch arch, const bool moe) {
+static constexpr uint32_t APERTUS_TEST_VOCAB_SIZE = 128;
+static constexpr uint32_t APERTUS_TEST_VOCAB_SIZE_OUT = 96;
+
+static gguf_context_ptr get_gguf_ctx(
+        const llm_arch arch, const bool moe,
+        const uint32_t apertus_vocab_out = APERTUS_TEST_VOCAB_SIZE_OUT, const uint32_t n_layer_override = 0) {
     gguf_context_ptr ret(gguf_init_empty());
     llama_model_saver ms(arch, ret.get());
     const uint32_t n_ctx = 256;
@@ -88,7 +96,7 @@ static gguf_context_ptr get_gguf_ctx(const llm_arch arch, const bool moe) {
     uint32_t n_embd  = 256;
     uint32_t n_head  = 2;
     uint32_t n_ff    = 384;
-    uint32_t n_layer = 2;
+    uint32_t n_layer = n_layer_override > 0 ? n_layer_override : 2;
     if (arch == LLM_ARCH_LLAMA4) {
         n_layer = 4; // hparams.n_no_rope_layer_step is hard-coded to 4
     } else if (arch == LLM_ARCH_GEMMA4) {
@@ -142,6 +150,9 @@ static gguf_context_ptr get_gguf_ctx(const llm_arch arch, const bool moe) {
 
     ms.add_kv(LLM_KV_GENERAL_ARCHITECTURE,      llm_arch_name(arch));
     ms.add_kv(LLM_KV_VOCAB_SIZE,                n_vocab);
+    if (arch == LLM_ARCH_APERTUS && apertus_vocab_out > 0) {
+        ms.add_kv(LLM_KV_VOCAB_SIZE_OUT, apertus_vocab_out);
+    }
     ms.add_kv(LLM_KV_CONTEXT_LENGTH,            n_ctx);
     ms.add_kv(LLM_KV_EMBEDDING_LENGTH,          n_embd);
     ms.add_kv(LLM_KV_FEATURES_LENGTH,           n_embd);
@@ -350,7 +361,13 @@ static gguf_context_ptr get_gguf_ctx(const llm_arch arch, const bool moe) {
     ms.add_kv(LLM_KV_POSNET_BLOCK_COUNT,        n_layer);
     ms.add_kv(LLM_KV_CONVNEXT_EMBEDDING_LENGTH, n_embd);
     ms.add_kv(LLM_KV_CONVNEXT_BLOCK_COUNT,      n_layer);
-    ms.add_kv(LLM_KV_XIELU_ALPHA_N,             1.0f);
+    if (arch == LLM_ARCH_APERTUS) {
+        std::vector<float> alpha_n(n_layer, 1.0f);
+        alpha_n.back() = 0.75f;
+        ms.add_kv(LLM_KV_XIELU_ALPHA_N, alpha_n);
+    } else {
+        ms.add_kv(LLM_KV_XIELU_ALPHA_N, 1.0f);
+    }
     ms.add_kv(LLM_KV_XIELU_ALPHA_P,             1.0f);
     ms.add_kv(LLM_KV_XIELU_BETA,                1.0f);
     ms.add_kv(LLM_KV_XIELU_EPS,                 1.0e-7f);
@@ -459,6 +476,88 @@ static std::vector<float> get_logits(
     }
     llama_batch_free(batch);
     return ret;
+}
+
+static bool check_apertus_logits(const std::vector<float> & logits, size_t n_tokens, uint32_t n_vocab_out) {
+    if (logits.size() != n_tokens * APERTUS_TEST_VOCAB_SIZE) {
+        return false;
+    }
+    for (size_t i = 0; i < logits.size(); ++i) {
+        if (i % APERTUS_TEST_VOCAB_SIZE < n_vocab_out) {
+            if (!std::isfinite(logits[i]) || logits[i] == -FLT_MAX) {
+                return false;
+            }
+        } else if (logits[i] != -FLT_MAX) {
+            return false;
+        }
+    }
+    return true;
+}
+
+static std::vector<float> apertus_text_logits(const std::vector<float> & logits) {
+    std::vector<float> result;
+    for (size_t i = 0; i < logits.size(); i += APERTUS_TEST_VOCAB_SIZE) {
+        result.insert(result.end(), logits.begin() + i, logits.begin() + i + APERTUS_TEST_VOCAB_SIZE_OUT);
+    }
+    return result;
+}
+
+static bool test_apertus_vocab(const size_t seed) {
+    const std::vector<llama_token> tokens = { 0, APERTUS_TEST_VOCAB_SIZE_OUT - 1,
+        APERTUS_TEST_VOCAB_SIZE_OUT, APERTUS_TEST_VOCAB_SIZE - 1 };
+    std::vector<float> legacy_logits;
+    for (uint32_t n_vocab_out : { 0u, APERTUS_TEST_VOCAB_SIZE, 1u }) {
+        gguf_context_ptr gguf_ctx = get_gguf_ctx(LLM_ARCH_APERTUS, false, n_vocab_out);
+        auto model_and_ctx = get_model_and_ctx(gguf_ctx.get(), nullptr, seed, {});
+        const auto logits = get_logits(model_and_ctx.first.get(), model_and_ctx.second.get(), tokens);
+        if (!check_apertus_logits(logits, tokens.size(), n_vocab_out > 0 ? n_vocab_out : APERTUS_TEST_VOCAB_SIZE)) {
+            return false;
+        }
+        if (n_vocab_out == 0) {
+            legacy_logits = logits;
+        } else if (n_vocab_out == APERTUS_TEST_VOCAB_SIZE && logits != legacy_logits) {
+            return false;
+        }
+        llama_model_saver saver(model_and_ctx.first.get());
+        saver.add_kv_from_model();
+        saver.add_tensors_from_model();
+        const int64_t key = gguf_find_key(saver.gguf_ctx, "apertus.vocab_size_out");
+        if (n_vocab_out == 0 ? key != -1 : (key == -1 || gguf_get_val_u32(saver.gguf_ctx, key) != n_vocab_out)) {
+            return false;
+        }
+        FILE * file = tmpfile();
+        if (file == nullptr) {
+            LOG_WRN("%s: cannot create a temporary file, skipping vocabulary roundtrip\n", __func__);
+            continue;
+        }
+        saver.save(file);
+        rewind(file);
+        auto restored = get_model_and_ctx(nullptr, file, seed, {});
+        fclose(file);
+        if (get_logits(restored.first.get(), restored.second.get(), tokens) != logits) {
+            return false;
+        }
+    }
+    for (uint32_t n_vocab_out : { APERTUS_TEST_VOCAB_SIZE + 1, std::numeric_limits<uint32_t>::max() }) {
+        gguf_context_ptr gguf_ctx = get_gguf_ctx(LLM_ARCH_APERTUS, false, n_vocab_out);
+        size_t tmp = seed;
+        llama_model_ptr model(llama_model_init_from_user(gguf_ctx.get(), set_tensor_data, &tmp, llama_model_default_params()));
+        if (model) {
+            return false;
+        }
+    }
+    return true;
+}
+
+static bool test_apertus_70b_layers(const size_t seed, const std::vector<ggml_backend_dev_t> & devs) {
+    gguf_context_ptr gguf_ctx = get_gguf_ctx(LLM_ARCH_APERTUS, false, APERTUS_TEST_VOCAB_SIZE_OUT, 80);
+    auto model_and_ctx = get_model_and_ctx(gguf_ctx.get(), nullptr, seed, devs);
+    if (llama_model_n_layer(model_and_ctx.first.get()) != 80) {
+        return false;
+    }
+    const std::vector<llama_token> tokens = { APERTUS_TEST_VOCAB_SIZE - 1 };
+    return check_apertus_logits(get_logits(model_and_ctx.first.get(), model_and_ctx.second.get(), tokens),
+        tokens.size(), APERTUS_TEST_VOCAB_SIZE_OUT);
 }
 
 static bool moe_mandatory(const llm_arch arch) {
@@ -669,6 +768,10 @@ static int test_backends(const llm_arch target_arch, const size_t seed, const in
     }, &ud);
 
     const std::vector<llama_token> tokens = get_tokens(128, 128, seed);
+    if ((target_arch == LLM_ARCH_UNKNOWN || target_arch == LLM_ARCH_APERTUS) && !test_apertus_vocab(seed)) {
+        LOG_ERR("%s: Apertus vocabulary tests failed\n", __func__);
+        return 1;
+    }
 
     struct device_config {
         std::vector<ggml_backend_dev_t> devs;
@@ -698,6 +801,15 @@ static int test_backends(const llm_arch target_arch, const size_t seed, const in
         }
 
         dev_configs.emplace_back(devices_meta, "Meta", LLAMA_SPLIT_MODE_TENSOR);
+    }
+
+    if (target_arch == LLM_ARCH_UNKNOWN || target_arch == LLM_ARCH_APERTUS) {
+        for (const device_config & dc : dev_configs) {
+            if (dc.split_mode == LLAMA_SPLIT_MODE_LAYER && !test_apertus_70b_layers(seed, dc.devs)) {
+                LOG_ERR("%s: Apertus 80-layer test failed on %s\n", __func__, dc.label.c_str());
+                return 1;
+            }
+        }
     }
 
     size_t max_arch_name_length = 0;
@@ -771,10 +883,16 @@ static int test_backends(const llm_arch target_arch, const size_t seed, const in
                     if (dc.split_mode != LLAMA_SPLIT_MODE_TENSOR || llm_arch_supports_sm_tensor(arch)) {
                         model_and_ctx_dev = get_model_and_ctx(gguf_ctx.get(), nullptr, seed, dc.devs, dc.split_mode, encode);
                         logits_dev = get_logits(model_and_ctx_dev.first.get(), model_and_ctx_dev.second.get(), tokens, encode);
-                        const double nmse_val = nmse(logits_cpu, logits_dev);
+                        const bool apertus = arch == LLM_ARCH_APERTUS;
+                        const bool valid_logits = !apertus ||
+                            (check_apertus_logits(logits_cpu, tokens.size(), APERTUS_TEST_VOCAB_SIZE_OUT) &&
+                             check_apertus_logits(logits_dev, tokens.size(), APERTUS_TEST_VOCAB_SIZE_OUT));
+                        // Exclude input-only token padding from the numerical comparison.
+                        const double nmse_val = apertus && valid_logits ?
+                            nmse(apertus_text_logits(logits_cpu), apertus_text_logits(logits_dev)) : nmse(logits_cpu, logits_dev);
                         snprintf(nmse_str, sizeof(nmse_str), "(%.2e)", nmse_val);
                         status_nmse = "\033[1;32mOK\033[0m";
-                        if (nmse_val > 1e-4) {
+                        if (!valid_logits || (apertus && !std::isfinite(nmse_val)) || nmse_val > 1e-4) {
                             all_ok = false;
                             status_nmse = "\033[1;31mFAIL\033[0m";
                         }
