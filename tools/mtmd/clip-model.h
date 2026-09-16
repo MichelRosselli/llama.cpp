@@ -29,11 +29,12 @@ enum patch_merge_type {
     PATCH_MERGE_SPATIAL_UNPAD,
 };
 
-// all algos are Pillow-compatible (matching PIL.Image.resize output)
+// Pillow-compatible unless the name specifies another implementation.
 enum resize_algo {
     RESIZE_ALGO_BILINEAR,
     RESIZE_ALGO_BICUBIC,
     RESIZE_ALGO_LANCZOS,
+    RESIZE_ALGO_BICUBIC_TORCHVISION,
 };
 
 // Padding style for img_tool::resize
@@ -123,6 +124,17 @@ struct clip_hparams {
     int32_t n_mel_bins = 0; // whisper preprocessor
     int32_t proj_stack_factor = 0; // ultravox
     int32_t subsampling_factor = 0; // parakeet
+
+    // discrete media tokenizers
+    int32_t codebook_size = 0;
+    int32_t codebook_dim = 0;
+    int32_t token_offset = 0;
+
+    // Apertus vision tokenizer
+    int32_t vision_spatial_factor = 0;
+    int32_t vision_residual_block_count = 0;
+    std::vector<int32_t> vision_channel_multipliers;
+    std::vector<int32_t> vision_attention_levels;
 
     int32_t audio_chunk_size           = 0;
     int32_t audio_conv_kernel_size     = 0;
@@ -552,6 +564,39 @@ struct clip_code2wav {
     ggml_tensor * dac_post_conv_b      = nullptr;
 };
 
+struct apertus_vision_resblock {
+    ggml_tensor * norm1_w = nullptr;
+    ggml_tensor * norm1_b = nullptr;
+    ggml_tensor * conv1_w = nullptr;
+    ggml_tensor * conv1_b = nullptr;
+    ggml_tensor * norm2_w = nullptr;
+    ggml_tensor * norm2_b = nullptr;
+    ggml_tensor * conv2_w = nullptr;
+    ggml_tensor * conv2_b = nullptr;
+    ggml_tensor * shortcut_w = nullptr;
+    ggml_tensor * shortcut_b = nullptr;
+};
+
+struct apertus_vision_attention {
+    ggml_tensor * norm_w = nullptr;
+    ggml_tensor * norm_b = nullptr;
+    ggml_tensor * q_w = nullptr;
+    ggml_tensor * q_b = nullptr;
+    ggml_tensor * k_w = nullptr;
+    ggml_tensor * k_b = nullptr;
+    ggml_tensor * v_w = nullptr;
+    ggml_tensor * v_b = nullptr;
+    ggml_tensor * out_w = nullptr;
+    ggml_tensor * out_b = nullptr;
+};
+
+struct apertus_vision_stage {
+    std::vector<apertus_vision_resblock> blocks;
+    std::vector<apertus_vision_attention> attentions;
+    ggml_tensor * downsample_w = nullptr;
+    ggml_tensor * downsample_b = nullptr;
+};
+
 struct clip_model {
     clip_modality modality = CLIP_MODALITY_VISION;
     projector_type proj_type = PROJECTOR_TYPE_MLP;
@@ -565,6 +610,21 @@ struct clip_model {
     ggml_tensor * position_embeddings = nullptr;
     ggml_tensor * norm_embd_w = nullptr;
     ggml_tensor * norm_embd_b = nullptr;
+
+    // Apertus discrete vision tokenizer
+    ggml_tensor * apertus_v_conv_in_w = nullptr;
+    ggml_tensor * apertus_v_conv_in_b = nullptr;
+    ggml_tensor * apertus_v_conv_out_w = nullptr;
+    ggml_tensor * apertus_v_conv_out_b = nullptr;
+    ggml_tensor * apertus_v_norm_out_w = nullptr;
+    ggml_tensor * apertus_v_norm_out_b = nullptr;
+    ggml_tensor * apertus_v_quant_conv_w = nullptr;
+    ggml_tensor * apertus_v_quant_conv_b = nullptr;
+    ggml_tensor * apertus_v_codebook = nullptr;
+    std::vector<apertus_vision_stage> apertus_v_stages;
+    apertus_vision_resblock apertus_v_mid_block_1;
+    apertus_vision_attention apertus_v_mid_attention;
+    apertus_vision_resblock apertus_v_mid_block_2;
 
     // "indexed" patch embedding norms
     ggml_tensor * patch_norm_1_w = nullptr;

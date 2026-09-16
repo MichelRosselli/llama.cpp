@@ -2,8 +2,11 @@
 
 #include "mtmd-image.h"
 #include "mtmd-internal.h"
+#include "mtmd-helper.h"
 
 #include <iostream>
+#include <cstring>
+#include <limits>
 #include <stdexcept>
 #include <string>
 #include <tuple>
@@ -42,6 +45,129 @@ struct test_registry {
 //
 // mtmd_image
 //
+
+MAKE_TEST(test_apertus_image_preprocessor) {
+    const std::vector<std::pair<clip_image_size, clip_image_size>> sizes = {
+        {{429, 806}, {432, 800}}, {{1920, 1080}, {1872, 1056}},
+        {{1400, 1400}, {1408, 1408}}, {{4032, 3024}, {1616, 1216}}, {{1, 1}, {256, 256}},
+    };
+    for (const auto & entry : sizes) {
+        const auto actual = mtmd_apertus_image_calc_size(entry.first, 16, 65536, 1960000);
+        t.assert_equal(entry.second.width, actual.width);
+        t.assert_equal(entry.second.height, actual.height);
+    }
+    for (const auto & args : std::vector<std::tuple<clip_image_size, int, int, int>> {
+        {{0, 10}, 16, 65536, 1960000}, {{10, -1}, 16, 65536, 1960000},
+        {{10, 10}, 0, 65536, 1960000}, {{10, 10}, 16, 0, 1960000},
+        {{10, 10}, 16, 65536, 1},
+        {{1, std::numeric_limits<int>::max()}, 16, 1, std::numeric_limits<int>::max()},
+    }) {
+        bool rejected = false;
+        try {
+            mtmd_apertus_image_calc_size(std::get<0>(args), std::get<1>(args), std::get<2>(args), std::get<3>(args));
+        } catch (const std::runtime_error &) {
+            rejected = true;
+        }
+        t.assert_true("invalid dimensions rejected", rejected);
+    }
+    clip_image_u8 image;
+    image.set_size({4, 3}, false);
+    image.cpy_buf({
+          0,  15,  30,  45,  60,  75,  90, 105, 120, 135, 150, 165,
+        180, 195, 210, 225, 240,   0,  15,  30,  45,  60,  75,  90,
+        105, 120, 135, 150, 165, 180, 195, 210, 225, 240,   0,  15,
+    });
+    // Torchvision antialiased uint8 bicubic, channels first, 4x3 -> 3x5.
+    const std::vector<uint8_t> expected = {
+          0,   9,  30,  64,  79, 104, 133, 148, 162,
+         81,  96,  81,  84,  98,  60,  86, 110, 130,
+        203, 218, 156, 120, 135,  14,  37,  52,  81,
+        154, 169, 153, 157, 177, 138, 159,  49,  70,
+        107, 122, 143, 177, 201, 226, 246,  54,  68,
+    };
+    const auto prepared = mtmd_apertus_image_prepare(image, {3, 5});
+    const auto & pixels = prepared.get_ro_buf();
+    if (t.assert_equal(expected.size(), pixels.size())) {
+        for (size_t i = 0; i < pixels.size(); ++i) {
+            t.assert_equal((float(expected[i]) - 127.5f) / 127.5f, pixels[i]);
+        }
+    }
+}
+
+MAKE_TEST(test_linear_media_v2) {
+    std::vector<char> wire;
+    const auto append = [&wire](auto value) {
+        const auto * first = reinterpret_cast<const char *>(&value);
+        wire.insert(wire.end(), first, first + sizeof(value));
+    };
+    append(uint64_t(2));
+    append(uint32_t(MTMD_INPUT_CHUNK_TYPE_IMAGE));
+    append(uint64_t(0));
+    append(uint8_t(1));
+    append(uint32_t(21)); // Full framed count, NORMAL positions, one image.
+    append(uint32_t(1));
+    append(uint32_t(0));
+    append(uint32_t(0));
+    append(uint32_t(1));
+    append(uint64_t(0));
+    append(uint8_t(0));
+    append(uint64_t(1));
+    append(uint8_t(0));
+    append(uint8_t(0));
+    append(int32_t(0)); // lead_pad
+    append(int32_t(64));
+    append(int32_t(64));
+    append(uint8_t(0));
+    mtmd::input_chunk_ptr chunk(mtmd_input_chunk_load(wire.data(), wire.size()));
+    if (!t.assert_true("load v2 fixture", bool(chunk))) {
+        return;
+    }
+    t.assert_equal(size_t(21), mtmd_input_chunk_get_n_tokens(chunk.get()));
+    t.assert_equal(llama_pos(21), mtmd_input_chunk_get_n_pos(chunk.get()));
+    const auto * image = mtmd_input_chunk_get_tokens_image(chunk.get());
+    for (size_t i = 0; i < 21; ++i) {
+        const auto pos = mtmd_image_tokens_get_decoder_pos(image, 5, i);
+        t.assert_true("linear position", pos.t == 5 + uint32_t(i) && pos.x == pos.t && pos.y == pos.t && pos.z == pos.t);
+    }
+    size_t size = 0;
+    t.assert_equal(0, mtmd_input_chunk_save(chunk.get(), nullptr, 0, &size));
+    std::vector<char> saved(size);
+    t.assert_equal(0, mtmd_input_chunk_save(chunk.get(), saved.data(), saved.size(), nullptr));
+    t.assert_true("unchanged v2 bytes", saved == wire);
+    const auto reject_field = [&](size_t offset, auto value) {
+        auto invalid = wire;
+        std::memcpy(invalid.data() + offset, &value, sizeof(value));
+        mtmd::input_chunk_ptr loaded(mtmd_input_chunk_load(invalid.data(), invalid.size()));
+        t.assert_true("invalid v2 field rejected", !loaded);
+    };
+    reject_field(0, uint64_t(1));
+    reject_field(0, uint64_t(3));
+    reject_field(21, uint32_t(0));
+    reject_field(21, std::numeric_limits<uint32_t>::max());
+    reject_field(37, uint32_t(0));
+    reject_field(41, std::numeric_limits<uint64_t>::max());
+    reject_field(50, std::numeric_limits<uint64_t>::max());
+    reject_field(60, int32_t(-1));
+    reject_field(64, int32_t(0));
+    for (size_t length : {size_t(0), size_t(8), wire.size() - 1}) {
+        mtmd::input_chunk_ptr loaded(mtmd_input_chunk_load(wire.data(), length));
+        t.assert_true("truncated v2 chunk rejected", !loaded);
+    }
+    mtmd::input_chunk_ptr placeholder(mtmd_input_chunk_get_placeholder(chunk.get()));
+    t.assert_equal(size_t(21), mtmd_input_chunk_get_n_tokens(placeholder.get()));
+
+    std::vector<llama_token> tokens(21, 0);
+    llama_pos next = -1;
+    for (int batch : {0, -1}) {
+        t.assert_equal(-1, mtmd_helper_decode_tokens_chunk(nullptr, nullptr, chunk.get(), tokens.data(), tokens.size(),
+            0, 0, batch, &next, nullptr, nullptr));
+    }
+    t.assert_equal(-1, mtmd_helper_decode_tokens_chunk(nullptr, nullptr, chunk.get(), tokens.data(), tokens.size(),
+        std::numeric_limits<llama_pos>::max() - 20, 0, 8, &next, nullptr, nullptr));
+    t.assert_equal(-1, mtmd_helper_decode_tokens_chunk(nullptr, nullptr, chunk.get(), tokens.data(), tokens.size() - 1,
+        0, 0, 8, &next, nullptr, nullptr));
+    t.assert_equal(llama_pos(-1), next);
+}
 
 MAKE_TEST(test_image_preprocessor_lfm2) {
     clip_hparams hparams;

@@ -123,6 +123,14 @@ struct mtmd_image_preprocessor_dyn_size : mtmd_image_preprocessor {
     mtmd_image_preproc_out preprocess(const clip_image_u8 & img) const override;
 };
 
+clip_image_size mtmd_apertus_image_calc_size(clip_image_size original_size, int spatial_factor, int min_pixels, int max_pixels);
+clip_image_f32 mtmd_apertus_image_prepare(const clip_image_u8 & image, clip_image_size target_size);
+
+struct mtmd_image_preprocessor_apertus : mtmd_image_preprocessor {
+    mtmd_image_preprocessor_apertus(const clip_ctx * ctx) : mtmd_image_preprocessor(ctx) {}
+    mtmd_image_preproc_out preprocess(const clip_image_u8 & img) const override;
+};
+
 // similar to mtmd_image_preprocessor_dyn_size, but resize the image to have longest edge equal to hparams.image_longest_edge, while preserving aspect ratio
 struct mtmd_image_preprocessor_longest_edge : mtmd_image_preprocessor {
     mtmd_image_preprocessor_longest_edge(const clip_ctx * ctx) : mtmd_image_preprocessor(ctx) {}

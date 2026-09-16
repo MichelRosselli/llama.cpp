@@ -11,7 +11,7 @@ import torch
 if TYPE_CHECKING:
     from torch import Tensor
 
-from .base import ModelBase, TextModel, gguf, logger
+from .base import MmprojModel, ModelBase, TextModel, gguf, logger
 
 
 @ModelBase.register(
@@ -491,3 +491,66 @@ class Apertus1p5Model(ApertusModel):
         if not 0 < n_vocab_out <= n_vocab:
             raise ValueError(f"Invalid output vocabulary size {n_vocab_out} for input vocabulary size {n_vocab}")
         self.gguf_writer.add_vocab_size_out(n_vocab_out)
+
+
+@ModelBase.register("Apertus1p5ForConditionalGeneration")
+class Apertus1p5MmprojModel(MmprojModel):
+    has_vision_encoder = True
+
+    def get_vision_config(self):
+        config = dict(self.global_config["vision_tokenizer_config"])
+        config["image_size"] = config["resolution"]
+        config["patch_size"] = 2 ** (len(config["channel_multiplier"]) - 1)
+        config["hidden_size"] = config["base_channels"]
+        config["intermediate_size"] = 0
+        config["num_hidden_layers"] = len(config["channel_multiplier"])
+        config["num_attention_heads"] = 1
+        return config
+
+    def set_gguf_parameters(self):
+        assert self.hparams_vision is not None
+        vision = self.hparams_vision
+        spatial_factor = 2 ** (len(vision["channel_multiplier"]) - 1)
+        attention_levels = [
+            level for level in range(len(vision["channel_multiplier"]))
+            if vision["resolution"] // (2 ** level) in vision["attn_resolutions"]
+        ]
+        offset = self.global_config["image_token_offset"]
+        if offset < 0 or vision["codebook_size"] <= 0 or offset + vision["codebook_size"] > self.global_config["text_config"]["vocab_size"]:
+            raise ValueError("Apertus image codebook exceeds the input vocabulary")
+
+        self.gguf_writer.add_file_type(self.ftype)
+        self.gguf_writer.add_clip_has_vision_encoder(True)
+        self.gguf_writer.add_clip_has_audio_encoder(False)
+        self.gguf_writer.add_clip_vision_projector_type(gguf.VisionProjectorType.APERTUS_VISION)
+        self.gguf_writer.add_vision_projection_dim(self.n_embd_text)
+        self.gguf_writer.add_vision_image_size(vision["resolution"])
+        self.gguf_writer.add_vision_patch_size(spatial_factor)
+        self.gguf_writer.add_vision_embedding_length(vision["base_channels"])
+        self.gguf_writer.add_vision_feed_forward_length(0)
+        self.gguf_writer.add_vision_block_count(len(vision["channel_multiplier"]))
+        self.gguf_writer.add_vision_head_count(1)
+        self.gguf_writer.add_vision_attention_layernorm_eps(1e-6)
+        self.gguf_writer.add_vision_image_mean(self.preprocessor_config["image_mean"])
+        self.gguf_writer.add_vision_image_std(self.preprocessor_config["image_std"])
+        self.gguf_writer.add_vision_min_pixels(self.preprocessor_config["min_pixels"])
+        self.gguf_writer.add_vision_max_pixels(self.preprocessor_config["max_pixels"])
+        self.gguf_writer.add_vision_codebook_size(vision["codebook_size"])
+        self.gguf_writer.add_vision_codebook_dim(vision["embed_dim"])
+        self.gguf_writer.add_vision_token_offset(offset)
+        self.gguf_writer.add_vision_spatial_factor(spatial_factor)
+        self.gguf_writer.add_vision_channel_multipliers(vision["channel_multiplier"])
+        self.gguf_writer.add_vision_residual_block_count(vision["num_res_blocks"])
+        self.gguf_writer.add_vision_attention_levels(attention_levels)
+
+    @classmethod
+    def filter_tensors(cls, item):
+        name, _ = item
+        return item if name.startswith("model.vision_tokenizer.") else None
+
+    def tensor_force_quant(self, name, new_name, bid, n_dims):
+        return gguf.GGMLQuantizationType.F32
+
+    def modify_tensors(self, data_torch, name, bid):
+        new_name = "v." + name.removeprefix("model.vision_tokenizer.")
+        yield new_name.replace("quantize.embedding.", "codebook."), data_torch

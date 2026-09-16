@@ -29,6 +29,7 @@ add_library(mtmd
             clip-graph.h
             models/models.h
             models/cogvlm.cpp
+            models/apertus-vision.cpp
             models/conformer.cpp
             models/deepseek4v.cpp
             models/dots3note.cpp

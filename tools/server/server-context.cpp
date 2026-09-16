@@ -749,7 +749,9 @@ static int process_mtmd_chunk(const server_slot & slot, mtmd::batch_ptr & mbatch
     auto try_decode = [&]() -> int32_t {
         if (mbatch) {
             float * embd = mtmd_batch_get_output_embd(mbatch.get(), chunk.get());
-            if (embd) {
+            size_t n_media_tokens = 0;
+            const auto * media_tokens = mtmd_batch_get_output_tokens(mbatch.get(), chunk.get(), &n_media_tokens);
+            if (embd || media_tokens) {
                 void * cb_data = slot.spec;
                 static auto cb = [](llama_batch batch, void * user_data) {
                     common_speculative * spec = static_cast<common_speculative *>(user_data);
@@ -760,18 +762,23 @@ static int process_mtmd_chunk(const server_slot & slot, mtmd::batch_ptr & mbatch
                 };
 
                 llama_pos new_n_past; // unused for now
-                res = mtmd_helper_decode_image_chunk(
-                    mctx,
-                    slot.ctx_tgt,
-                    chunk.get(),
-                    embd,
-                    slot.prompt.tokens.pos_next(),
-                    slot.id,
-                    llama_n_batch(slot.ctx_tgt),
-                    &new_n_past,
-                    cb,
-                    cb_data
-                );
+                if (media_tokens) {
+                    res = mtmd_helper_decode_tokens_chunk(mctx, slot.ctx_tgt, chunk.get(), media_tokens, n_media_tokens,
+                        slot.prompt.tokens.pos_next(), slot.id, llama_n_batch(slot.ctx_tgt), &new_n_past, cb, cb_data);
+                } else {
+                    res = mtmd_helper_decode_image_chunk(
+                        mctx,
+                        slot.ctx_tgt,
+                        chunk.get(),
+                        embd,
+                        slot.prompt.tokens.pos_next(),
+                        slot.id,
+                        llama_n_batch(slot.ctx_tgt),
+                        &new_n_past,
+                        cb,
+                        cb_data
+                    );
+                }
                 if (res != 0) {
                     SLT_ERR(slot, "failed to decode mtmd chunk, idx = %zu, res = %d\n", idx, res);
                     return -1;

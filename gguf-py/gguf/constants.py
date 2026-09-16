@@ -397,6 +397,13 @@ class Keys:
         WINDOW_SIZE           = "clip.vision.window_size"
         FEATURE_LAYERS        = "clip.vision.feature_layer" # Granite4 Vision
         IMAGE_GRID_PINPOINTS  = "clip.vision.image_grid_pinpoints" # Granite4 Vision
+        CODEBOOK_SIZE         = "clip.vision.codebook_size"
+        CODEBOOK_DIM          = "clip.vision.codebook_dim"
+        TOKEN_OFFSET          = "clip.vision.token_offset"
+        SPATIAL_FACTOR        = "clip.vision.spatial_factor"
+        CHANNEL_MULTIPLIERS   = "clip.vision.channel_multipliers"
+        RESIDUAL_BLOCK_COUNT  = "clip.vision.residual_block_count"
+        ATTENTION_LEVELS      = "clip.vision.attention_levels"
 
         class Attention:
             HEAD_COUNT      = "clip.vision.attention.head_count"
@@ -5842,6 +5849,7 @@ class VisionProjectorType:
     MIMO_AUDIO     = "mimo_audio"
     GRANITE4_VISION = "granite4_vision"
     MUSE_GLIMMER   = "muse-glimmer"
+    APERTUS_VISION = "apertus_vision"
 
 
 # Items here are (block size, type size)

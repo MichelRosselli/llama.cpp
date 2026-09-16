@@ -288,6 +288,7 @@ TEXT_MODEL_MAP: dict[str, str] = {
 
 
 MMPROJ_MODEL_MAP: dict[str, str] = {
+    "Apertus1p5ForConditionalGeneration": "llama",
     "AudioFlamingo3ForConditionalGeneration": "ultravox",
     "CogVLMForCausalLM": "cogvlm",
     "DeepseekOCR2ForCausalLM": "deepseek",

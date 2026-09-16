@@ -1455,6 +1455,27 @@ class GGUFWriter:
     def add_vision_image_grid_pinpoints(self, layers: Sequence[Sequence[int]]) -> None:
         self.add_array(Keys.ClipVision.IMAGE_GRID_PINPOINTS, layers)
 
+    def add_vision_codebook_size(self, value: int) -> None:
+        self.add_uint32(Keys.ClipVision.CODEBOOK_SIZE, value)
+
+    def add_vision_codebook_dim(self, value: int) -> None:
+        self.add_uint32(Keys.ClipVision.CODEBOOK_DIM, value)
+
+    def add_vision_token_offset(self, value: int) -> None:
+        self.add_uint32(Keys.ClipVision.TOKEN_OFFSET, value)
+
+    def add_vision_spatial_factor(self, value: int) -> None:
+        self.add_uint32(Keys.ClipVision.SPATIAL_FACTOR, value)
+
+    def add_vision_channel_multipliers(self, values: Sequence[int]) -> None:
+        self.add_array(Keys.ClipVision.CHANNEL_MULTIPLIERS, values)
+
+    def add_vision_residual_block_count(self, value: int) -> None:
+        self.add_uint32(Keys.ClipVision.RESIDUAL_BLOCK_COUNT, value)
+
+    def add_vision_attention_levels(self, values: Sequence[int]) -> None:
+        self.add_array(Keys.ClipVision.ATTENTION_LEVELS, values)
+
     def add_vision_sam_layers_count(self, value: int) -> None:
         self.add_uint32(Keys.ClipVision.SAM.BLOCK_COUNT, value)
 
