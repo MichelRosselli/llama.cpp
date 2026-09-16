@@ -632,18 +632,24 @@ struct mtmd_context {
         };
         validate_embedding_width(ctx_v, "vision");
         validate_embedding_width(ctx_a, "audio");
-        if (ctx_v && clip_outputs_tokens(ctx_v) && vocab) {
-            const auto * hp = clip_get_hparams(ctx_v);
+        auto validate_token_vocabulary = [&](clip_ctx * ctx_clip, const char * token_name) {
+            if (!ctx_clip || !clip_outputs_tokens(ctx_clip) || !vocab) {
+                return;
+            }
+            const auto * hp = clip_get_hparams(ctx_clip);
             if (int64_t(hp->token_offset) + hp->codebook_size > llama_vocab_n_tokens(vocab) ||
                 pos_type != MTMD_POS_TYPE_NORMAL) {
-                throw std::runtime_error("Apertus image tokenizer is incompatible with the text model");
+                throw std::runtime_error("Apertus tokenizer is incompatible with the text model");
             }
-            const auto last = "<|visual token " + std::to_string(hp->codebook_size - 1) + "|>";
-            if (std::strcmp(llama_vocab_get_text(vocab, hp->token_offset), "<|visual token 0|>") != 0 ||
+            const auto first = std::string("<|") + token_name + " token 0|>";
+            const auto last = std::string("<|") + token_name + " token " + std::to_string(hp->codebook_size - 1) + "|>";
+            if (std::strcmp(llama_vocab_get_text(vocab, hp->token_offset), first.c_str()) != 0 ||
                 std::strcmp(llama_vocab_get_text(vocab, hp->token_offset + hp->codebook_size - 1), last.c_str()) != 0) {
-                throw std::runtime_error("Apertus image codebook does not match the text vocabulary");
+                throw std::runtime_error("Apertus codebook does not match the text vocabulary");
             }
-        }
+        };
+        validate_token_vocabulary(ctx_v, "visual");
+        validate_token_vocabulary(ctx_a, "audio");
         if (ctx_gen_a) {
             int n_embd_gen = clip_n_mmproj_embd(ctx_gen_a);
             if (n_embd_text > 0 && n_embd_text != n_embd_gen) {
@@ -1048,6 +1054,12 @@ struct mtmd_context {
             case PROJECTOR_TYPE_POCKETTTS_SPKENC:
                 {
                     audio_preproc = std::make_unique<mtmd_audio_preprocessor_pockettts>(ctx_a);
+                } break;
+            case PROJECTOR_TYPE_APERTUS_AUDIO:
+                {
+                    aud_beg = "<|audio_start|>";
+                    aud_end = "<|audio_end|>";
+                    audio_preproc = std::make_unique<mtmd_audio_preprocessor_apertus>(ctx_a);
                 } break;
             default:
                 throw std::runtime_error(string_format("%s: unexpected audio projector type %d\n", __func__, proj));
@@ -1641,7 +1653,7 @@ struct mtmd_tokenizer {
                     n_samples = dummy.size();
                 } else {
                     const auto & buf = bitmap->get_ro_buf();
-                    GGML_ASSERT(buf.size() > sizeof(float));
+                    GGML_ASSERT(buf.size() >= sizeof(float));
                     GGML_ASSERT(buf.size() % sizeof(float) == 0);
 
                     samples = (const float *)buf.data();
@@ -2368,6 +2380,10 @@ mtmd_bitmap * mtmd_bitmap_init(uint32_t nx,
 
 mtmd_bitmap * mtmd_bitmap_init_from_audio(size_t n_samples,
                                           const float * data) {
+    if (n_samples > UINT32_MAX || n_samples > SIZE_MAX / sizeof(float)) {
+        LOG_ERR("%s: audio length exceeds the supported dimension range\n", __func__);
+        return nullptr;
+    }
     mtmd_bitmap * bitmap = new mtmd_bitmap((const unsigned char *)data, n_samples);
     GGML_ASSERT(bitmap->is_audio);
     if (!bitmap->is_placeholder()) {

@@ -30,6 +30,7 @@ add_library(mtmd
             models/models.h
             models/cogvlm.cpp
             models/apertus-vision.cpp
+            models/apertus-audio.cpp
             models/conformer.cpp
             models/deepseek4v.cpp
             models/dots3note.cpp

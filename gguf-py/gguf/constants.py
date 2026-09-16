@@ -424,6 +424,15 @@ class Keys:
 
     class ClipAudio:
         PROJECTOR_TYPE      = "clip.audio.projector_type" # for mixed modality models
+        CODEBOOK_SIZE       = "clip.audio.codebook_size"
+        CODEBOOK_DIM        = "clip.audio.codebook_dim"
+        TOKEN_OFFSET        = "clip.audio.token_offset"
+        SAMPLE_RATE         = "clip.audio.sample_rate"
+        HOP_LENGTH          = "clip.audio.hop_length"
+        DOWNSAMPLE_RATIOS    = "clip.audio.downsample_ratios"
+        RESIDUAL_BLOCK_COUNT = "clip.audio.residual_block_count"
+        DILATION_GROWTH_RATE = "clip.audio.dilation_growth_rate"
+        LSTM_BLOCK_COUNT     = "clip.audio.lstm_block_count"
         NUM_MEL_BINS        = "clip.audio.num_mel_bins"
         EMBEDDING_LENGTH    = "clip.audio.embedding_length"
         FEED_FORWARD_LENGTH = "clip.audio.feed_forward_length"
@@ -5850,6 +5859,7 @@ class VisionProjectorType:
     GRANITE4_VISION = "granite4_vision"
     MUSE_GLIMMER   = "muse-glimmer"
     APERTUS_VISION = "apertus_vision"
+    APERTUS_AUDIO = "apertus_audio"
 
 
 # Items here are (block size, type size)

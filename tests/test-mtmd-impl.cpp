@@ -1,10 +1,12 @@
 #include "testing.h"
 
 #include "mtmd-image.h"
+#include "mtmd-audio.h"
 #include "mtmd-internal.h"
 #include "mtmd-helper.h"
 
 #include <iostream>
+#include <cmath>
 #include <cstring>
 #include <limits>
 #include <stdexcept>
@@ -45,6 +47,30 @@ struct test_registry {
 //
 // mtmd_image
 //
+
+MAKE_TEST(test_apertus_audio_preprocessor) {
+    mtmd_audio_mel output;
+    const float samples[] = {0.0f, -2.0f, 1.0f};
+    t.assert_equal(false, mtmd_apertus_audio_prepare(nullptr, 1, output));
+    t.assert_equal(false, mtmd_apertus_audio_prepare(samples, 0, output));
+    t.assert_equal(false, mtmd_apertus_audio_prepare(samples, size_t(INT32_MAX) + 1, output));
+    t.assert_equal(true, mtmd_apertus_audio_prepare(samples, 3, output));
+    t.assert_equal(int64_t(3), output.n_len);
+    t.assert_equal(int64_t(3), output.n_len_org);
+    t.assert_equal(int64_t(1), output.n_mel);
+    const float peak = std::pow(10.0f, -3.0f / 20.0f);
+    t.assert_equal(true, std::abs(output.data[1] + peak) < 1e-6f);
+    t.assert_equal(true, std::abs(output.data[2] - peak / 2) < 1e-6f);
+    const auto valid = output.data;
+    for (float sample : {std::numeric_limits<float>::quiet_NaN(),
+                         std::numeric_limits<float>::infinity(), -std::numeric_limits<float>::infinity()}) {
+        t.assert_equal(false, mtmd_apertus_audio_prepare(&sample, 1, output));
+        t.assert_equal(true, output.data == valid);
+    }
+    const float silence[] = {0.0f, 0.0f};
+    t.assert_equal(true, mtmd_apertus_audio_prepare(silence, 2, output));
+    t.assert_equal(true, output.data == std::vector<float>({0.0f, 0.0f}));
+}
 
 MAKE_TEST(test_apertus_image_preprocessor) {
     const std::vector<std::pair<clip_image_size, clip_image_size>> sizes = {

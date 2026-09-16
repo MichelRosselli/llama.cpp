@@ -162,6 +162,8 @@ struct clip_ctx {
 
     int max_nodes = 8192;
     ggml_backend_sched_ptr sched;
+    ggml_backend_sched_eval_callback cb_eval = nullptr;
+    void * cb_eval_user_data = nullptr;
     clip_flash_attn_type flash_attn_type = CLIP_FLASH_ATTN_TYPE_AUTO;
     bool is_allocated = false;
 
@@ -217,12 +219,15 @@ struct clip_ctx {
         backend_ptrs.push_back(backend_cpu);
         backend_buft.push_back(ggml_backend_get_default_buffer_type(backend_cpu));
 
+        cb_eval = ctx_params.cb_eval;
+        cb_eval_user_data = ctx_params.cb_eval_user_data;
         sched.reset(
-            ggml_backend_sched_new(backend_ptrs.data(), backend_buft.data(), backend_ptrs.size(), 8192, false, true)
+            ggml_backend_sched_new(
+                backend_ptrs.data(), backend_buft.data(), backend_ptrs.size(), max_nodes, false, true)
         );
 
-        if (ctx_params.cb_eval != nullptr) {
-            ggml_backend_sched_set_eval_callback(sched.get(), ctx_params.cb_eval, ctx_params.cb_eval_user_data);
+        if (cb_eval != nullptr) {
+            ggml_backend_sched_set_eval_callback(sched.get(), cb_eval, cb_eval_user_data);
         }
 
         debug_output_embeddings = std::getenv("MTMD_DEBUG_EMBEDDINGS") != nullptr;
@@ -238,6 +243,21 @@ struct clip_ctx {
     // this function is added so that we don't change too much of the existing code
     projector_type proj_type() const {
         return model.proj_type;
+    }
+
+    void ensure_graph_capacity(int required_nodes) {
+        if (required_nodes <= max_nodes) {
+            return;
+        }
+
+        max_nodes = required_nodes;
+        buf_compute_meta.resize(max_nodes * ggml_tensor_overhead() + ggml_graph_overhead_custom(max_nodes, false));
+        sched.reset(ggml_backend_sched_new(
+            backend_ptrs.data(), backend_buft.data(), backend_ptrs.size(), max_nodes, false, true));
+        if (cb_eval != nullptr) {
+            ggml_backend_sched_set_eval_callback(sched.get(), cb_eval, cb_eval_user_data);
+        }
+        is_allocated = false;
     }
 };
 
@@ -1143,6 +1163,10 @@ static std::unique_ptr<clip_graph> clip_get_graph_builder(clip_ctx * ctx, const 
             {
                 builder = std::make_unique<clip_graph_apertus_vision>(ctx, img);
             } break;
+        case PROJECTOR_TYPE_APERTUS_AUDIO:
+            {
+                builder = std::make_unique<clip_graph_apertus_audio>(ctx, img);
+            } break;
         default:
             GGML_ABORT("missing cgraph builder");
     }
@@ -1909,6 +1933,37 @@ struct clip_model_loader {
                         }
                         hparams.warmup_image_size = hparams.image_size;
                     } break;
+                case PROJECTOR_TYPE_APERTUS_AUDIO:
+                    {
+                        get_u32(KEY_A_CODEBOOK_SIZE, hparams.codebook_size);
+                        get_u32(KEY_A_CODEBOOK_DIM, hparams.codebook_dim);
+                        get_u32(KEY_A_TOKEN_OFFSET, hparams.token_offset);
+                        get_u32(KEY_A_SAMPLE_RATE, hparams.audio_sample_rate);
+                        get_u32(KEY_A_HOP_LENGTH, hparams.audio_hop_len);
+                        get_u32(KEY_A_RESIDUAL_BLOCK_COUNT, hparams.audio_residual_block_count);
+                        get_u32(KEY_A_DILATION_GROWTH_RATE, hparams.audio_dilation_growth_rate);
+                        get_u32(KEY_A_LSTM_BLOCK_COUNT, hparams.audio_lstm_block_count);
+                        get_arr_int(KEY_A_DOWNSAMPLE_RATIOS, hparams.audio_downsample_ratios, true);
+                        if (hparams.codebook_size <= 0 || hparams.codebook_dim <= 0 || hparams.token_offset < 0 ||
+                            int64_t(hparams.token_offset) + hparams.codebook_size > INT32_MAX ||
+                            hparams.audio_sample_rate <= 0 || hparams.audio_hop_len <= 0 ||
+                            hparams.audio_downsample_ratios.size() != 4 || hparams.audio_residual_block_count != 1 ||
+                            hparams.audio_dilation_growth_rate <= 0 || hparams.audio_lstm_block_count <= 0 ||
+                            hparams.audio_lstm_block_count > gguf_get_n_tensors(ctx_gguf.get()) / 4) {
+                            throw std::runtime_error("invalid Apertus audio metadata");
+                        }
+                        int64_t hop_length = 1;
+                        for (int32_t ratio : hparams.audio_downsample_ratios) {
+                            if (ratio <= 0 || hop_length > INT32_MAX / ratio) {
+                                throw std::runtime_error("invalid Apertus audio downsample ratio");
+                            }
+                            hop_length *= ratio;
+                        }
+                        if (hop_length != hparams.audio_hop_len) {
+                            throw std::runtime_error("Apertus audio hop length does not match downsample ratios");
+                        }
+                        hparams.audio_chunk_len = 0;
+                    } break;
                 case PROJECTOR_TYPE_PADDLEOCR:
                     {
                         hparams.n_merge = 2;
@@ -2122,7 +2177,8 @@ struct clip_model_loader {
                 // checks below do not apply to it.
                 // pocket-tts is encoder-free in the same sense: mimi convolves the raw waveform
                 const bool fft_based = model.proj_type != PROJECTOR_TYPE_GEMMA4UA &&
-                                       model.proj_type != PROJECTOR_TYPE_POCKETTTS_SPKENC;
+                                       model.proj_type != PROJECTOR_TYPE_POCKETTTS_SPKENC &&
+                                       model.proj_type != PROJECTOR_TYPE_APERTUS_AUDIO;
 
                 // Validate audio hparams loaded from GGUF metadata
                 if (hparams.n_mel_bins <= 0 || (fft_based && hparams.n_mel_bins > 256)) {
@@ -2283,7 +2339,8 @@ struct clip_model_loader {
             model.proj_type != PROJECTOR_TYPE_GEMMA3NV &&
             model.proj_type != PROJECTOR_TYPE_QWEN3TTS_SPKENC &&
             model.proj_type != PROJECTOR_TYPE_POCKETTTS_GEN &&
-            model.proj_type != PROJECTOR_TYPE_APERTUS_VISION);
+            model.proj_type != PROJECTOR_TYPE_APERTUS_VISION &&
+            model.proj_type != PROJECTOR_TYPE_APERTUS_AUDIO);
 
         // layers
         const int n_layers_to_load = has_standard_layers ? hparams.n_layer : 0;
@@ -3695,6 +3752,46 @@ struct clip_model_loader {
                             "%s: Apertus vision codebook shape does not match metadata\n", __func__));
                     }
                 } break;
+            case PROJECTOR_TYPE_APERTUS_AUDIO:
+                {
+                    static constexpr int conv_layer_ids[] = { 0, 3, 6, 9, 12, 15 };
+                    static constexpr int resblock_layer_ids[] = { 1, 4, 7, 10 };
+
+                    model.apertus_a_convs.resize(std::size(conv_layer_ids));
+                    for (size_t i = 0; i < model.apertus_a_convs.size(); ++i) {
+                        auto & conv = model.apertus_a_convs[i];
+                        conv.w = get_tensor(string_format(TN_APERTUS_A_CONV, conv_layer_ids[i], "weight"));
+                        conv.b = get_tensor(string_format(TN_APERTUS_A_CONV, conv_layer_ids[i], "bias"));
+                    }
+
+                    model.apertus_a_resblocks.resize(std::size(resblock_layer_ids));
+                    for (size_t i = 0; i < model.apertus_a_resblocks.size(); ++i) {
+                        const int layer_id = resblock_layer_ids[i];
+                        auto & block = model.apertus_a_resblocks[i];
+                        block.conv1.w = get_tensor(string_format(TN_APERTUS_A_RESBLOCK_CONV, layer_id, 1, "weight"));
+                        block.conv1.b = get_tensor(string_format(TN_APERTUS_A_RESBLOCK_CONV, layer_id, 1, "bias"));
+                        block.conv2.w = get_tensor(string_format(TN_APERTUS_A_RESBLOCK_CONV, layer_id, 3, "weight"));
+                        block.conv2.b = get_tensor(string_format(TN_APERTUS_A_RESBLOCK_CONV, layer_id, 3, "bias"));
+                        block.shortcut.w = get_tensor(string_format(TN_APERTUS_A_SHORTCUT, layer_id, "weight"));
+                        block.shortcut.b = get_tensor(string_format(TN_APERTUS_A_SHORTCUT, layer_id, "bias"));
+                    }
+
+                    model.apertus_a_lstm_layers.resize(hparams.audio_lstm_block_count);
+                    for (int layer_id = 0; layer_id < hparams.audio_lstm_block_count; ++layer_id) {
+                        auto & layer = model.apertus_a_lstm_layers[layer_id];
+                        layer.weight_ih = get_tensor(string_format(TN_APERTUS_A_LSTM, "weight_ih", layer_id));
+                        layer.weight_hh = get_tensor(string_format(TN_APERTUS_A_LSTM, "weight_hh", layer_id));
+                        layer.bias_ih = get_tensor(string_format(TN_APERTUS_A_LSTM, "bias_ih", layer_id));
+                        layer.bias_hh = get_tensor(string_format(TN_APERTUS_A_LSTM, "bias_hh", layer_id));
+                    }
+
+                    model.apertus_a_codebook = get_tensor(TN_APERTUS_A_CODEBOOK);
+                    if (model.apertus_a_codebook->ne[0] != hparams.codebook_dim ||
+                        model.apertus_a_codebook->ne[1] != hparams.codebook_size) {
+                        throw std::runtime_error(string_format(
+                            "%s: Apertus audio codebook shape does not match metadata\n", __func__));
+                    }
+                } break;
             default:
                 GGML_ASSERT(false && "unknown projector type");
         }
@@ -3785,7 +3882,8 @@ struct clip_model_loader {
         } else {
             // GEMMA4UA uses n_mel_bins as a raw-waveform frame size (640), not a mel-bin count,
             // so the [1, 256] bound only applies to FFT-based models.
-            const bool fft_based = ctx_clip.model.proj_type != PROJECTOR_TYPE_GEMMA4UA;
+            const bool fft_based = ctx_clip.model.proj_type != PROJECTOR_TYPE_GEMMA4UA &&
+                                   ctx_clip.model.proj_type != PROJECTOR_TYPE_APERTUS_AUDIO;
             if (hparams.n_mel_bins <= 0 || (fft_based && hparams.n_mel_bins > 256)) {
                 throw std::runtime_error(string_format("%s: invalid n_mel_bins (%d), must be in [1, 256]\n", __func__, hparams.n_mel_bins));
             }
@@ -3797,7 +3895,7 @@ struct clip_model_loader {
     }
 
     static void init_ctx(clip_ctx & ctx_clip) {
-        ctx_clip.buf_compute_meta.resize(ctx_clip.max_nodes * ggml_tensor_overhead() + ggml_graph_overhead());
+        ctx_clip.buf_compute_meta.resize(ctx_clip.max_nodes * ggml_tensor_overhead() + ggml_graph_overhead_custom(ctx_clip.max_nodes, false));
 
         // check batching support
         auto batch = get_dummy_batch(ctx_clip);
@@ -4507,6 +4605,10 @@ int clip_n_output_tokens(const clip_ctx * ctx, const clip_image_f32 * img) {
                 n_patches = (img->nx() / params.vision_spatial_factor) *
                             (img->ny() / params.vision_spatial_factor);
             } break;
+        case PROJECTOR_TYPE_APERTUS_AUDIO:
+            {
+                n_patches = (int64_t(img->nx()) + params.audio_hop_len - 1) / params.audio_hop_len;
+            } break;
         default:
             GGML_ABORT("unsupported projector type");
     }
@@ -4547,6 +4649,16 @@ static std::vector<c2w_state_slot> list_gen_state_slots(const clip_hparams & hpa
 bool clip_encode(struct clip_ctx * ctx, struct clip_encode_params * params) {
     const clip_image_f32_batch & imgs = *params->imgs;
     int n_batch_cur = imgs.entries.size();
+
+    if (ctx->proj_type() == PROJECTOR_TYPE_APERTUS_AUDIO && !imgs.entries.empty()) {
+        const int64_t n_audio_tokens = clip_n_output_tokens(ctx, &imgs.entries.front());
+        const int64_t required_nodes = std::max<int64_t>(8192, 2048 + 32 * int64_t(ctx->model.hparams.audio_lstm_block_count) * n_audio_tokens);
+        if (required_nodes > std::numeric_limits<int>::max()) {
+            LOG_ERR("%s: Apertus audio graph is too large (%" PRId64 " nodes)\n", __func__, required_nodes);
+            return false;
+        }
+        ctx->ensure_graph_capacity((int) required_nodes);
+    }
 
     // [QWEN_VIDEO] for video models, the batch dimension is used as temporal dimension for merged frames
     if (!ctx->support_batch && n_batch_cur > clip_model_n_temporal_merge(ctx)) {
@@ -5864,6 +5976,7 @@ bool clip_encode(struct clip_ctx * ctx, struct clip_encode_params * params) {
                 }
             } break;
         case PROJECTOR_TYPE_APERTUS_VISION:
+        case PROJECTOR_TYPE_APERTUS_AUDIO:
             {
                 // These encoders only require inp_raw.
             } break;
@@ -6180,6 +6293,7 @@ int clip_n_mmproj_embd(const struct clip_ctx * ctx) {
         case PROJECTOR_TYPE_PARAKEET:
             return ctx->model.mm_1_w->ne[1];
         case PROJECTOR_TYPE_APERTUS_VISION:
+        case PROJECTOR_TYPE_APERTUS_AUDIO:
             return ctx->model.hparams.projection_dim;
         default:
             GGML_ABORT("Unknown projector type");
@@ -6195,7 +6309,8 @@ bool clip_has_vision_encoder(const struct clip_ctx * ctx) {
 }
 
 bool clip_outputs_tokens(const struct clip_ctx * ctx) {
-    return ctx->model.proj_type == PROJECTOR_TYPE_APERTUS_VISION;
+    return ctx->model.proj_type == PROJECTOR_TYPE_APERTUS_VISION ||
+           ctx->model.proj_type == PROJECTOR_TYPE_APERTUS_AUDIO;
 }
 
 bool clip_has_audio_encoder(const struct clip_ctx * ctx) {

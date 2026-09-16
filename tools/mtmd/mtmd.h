@@ -173,6 +173,7 @@ MTMD_API const char * mtmd_get_marker(const mtmd_context * ctx);
 //     you can pass the bitmap via mtmd_tokenize(), then call mtmd_*_get_n_tokens() to count the tokens
 //     note: passing a placeholder bitmap to mtmd_encode() will return an error
 MTMD_API mtmd_bitmap *         mtmd_bitmap_init           (uint32_t nx, uint32_t ny, const unsigned char * data);
+// Returns nullptr if the sample count or byte size exceeds the internal storage limits.
 MTMD_API mtmd_bitmap *         mtmd_bitmap_init_from_audio(size_t n_samples,         const float         * data);
 MTMD_API uint32_t              mtmd_bitmap_get_nx     (const mtmd_bitmap * bitmap);
 MTMD_API uint32_t              mtmd_bitmap_get_ny     (const mtmd_bitmap * bitmap);
