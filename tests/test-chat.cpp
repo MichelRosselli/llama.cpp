@@ -6895,7 +6895,8 @@ static void test_template_generation_prompt() {
         assert_equals(true, accepts_grammar(complete_call));
         assert_equals(false, accepts_grammar("No tool needed."));
         const std::string no_suffix = R"(<|tools_prefix|>[{"special_function":{"arg1":1}}])";
-        assert_equals(false, accepts_grammar(no_suffix));
+        assert_equals(true, accepts_grammar(no_suffix));
+        assert_equals(false, accepts_grammar(R"(<|tools_prefix|>[{"special_function":{"arg1":1}})"));
         assert_msg_equals(message_assist_call, tool_parser.parse(no_suffix, false), true);
 
         for (const auto & malformed : {

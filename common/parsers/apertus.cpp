@@ -146,8 +146,8 @@ common_chat_params common_chat_params_init_apertus_1_5(
         if (inputs.parallel_tool_calls) {
             tool_calls += p.zero_or_more(p.space() + p.literal(",") + p.space() + tool_choice);
         }
-        // Recover a missing suffix while keeping generation constrained to it.
-        auto suffix = p.gbnf(p.optional(p.literal(TOOLS_END)), gbnf_format_literal(TOOLS_END));
+        // Allow the EOG token once the tool-call JSON is complete.
+        auto suffix = p.optional(p.literal(TOOLS_END));
         auto tool_section = p.trigger_rule("tool-call", p.literal(TOOLS_START) + p.space() +
             p.literal("[") + p.space() + tool_calls + p.space() + p.literal("]") + p.space() + suffix);
 
