@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import math
+import re
 
 from typing import Callable, Iterable, TYPE_CHECKING
 
@@ -487,8 +488,10 @@ class Apertus1p5Model(ApertusModel):
         super().set_gguf_parameters()
 
         n_vocab = self.hparams["vocab_size"]
-        n_vocab_out = self.hparams["output_vocab_size"]
-        if not 0 < n_vocab_out <= n_vocab:
+        n_vocab_out = self.hparams.get("output_vocab_size")
+        if n_vocab_out is None:
+            n_vocab_out = n_vocab
+        if type(n_vocab_out) is not int or not 0 < n_vocab_out <= n_vocab:
             raise ValueError(f"Invalid output vocabulary size {n_vocab_out} for input vocabulary size {n_vocab}")
         self.gguf_writer.add_vocab_size_out(n_vocab_out)
 
@@ -499,7 +502,8 @@ class Apertus1p5MmprojModel(MmprojModel):
     has_audio_encoder = True
 
     def get_vision_config(self):
-        config = dict(self.global_config["vision_tokenizer_config"])
+        config_name = "vision_config" if "vision_config" in self.global_config else "vision_tokenizer_config"
+        config = dict(self.global_config[config_name])
         config["image_size"] = config["resolution"]
         config["patch_size"] = 2 ** (len(config["channel_multiplier"]) - 1)
         config["hidden_size"] = config["base_channels"]
@@ -509,7 +513,8 @@ class Apertus1p5MmprojModel(MmprojModel):
         return config
 
     def get_audio_config(self):
-        config = dict(self.global_config["audio_tokenizer_config"])
+        config_name = "audio_config" if self.global_config.get("audio_config") else "audio_tokenizer_config"
+        config = dict(self.global_config[config_name])
         config["intermediate_size"] = 0
         config["num_hidden_layers"] = len(config["upsampling_ratios"])
         config["num_attention_heads"] = 1
@@ -587,6 +592,9 @@ class Apertus1p5MmprojModel(MmprojModel):
     def modify_tensors(self, data_torch, name, bid):
         if name.startswith("model.vision_tokenizer."):
             new_name = "v." + name.removeprefix("model.vision_tokenizer.")
+            new_name = re.sub(r"^v\.encoder\.stages\.(\d+)\.layers\.(\d+)\.resnet\.", r"v.encoder.down.\1.block.\2.", new_name)
+            new_name = re.sub(r"^v\.encoder\.stages\.(\d+)\.layers\.(\d+)\.attention\.", r"v.encoder.down.\1.attn.\2.", new_name)
+            new_name = re.sub(r"^v\.encoder\.stages\.(\d+)\.downsample\.", r"v.encoder.down.\1.downsample.", new_name)
             yield new_name.replace("quantize.embedding.", "codebook."), data_torch
         elif name.startswith("model.audio_tokenizer.encoder."):
             weight_norm_g = ".parametrizations.weight.original0"
