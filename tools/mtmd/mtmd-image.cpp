@@ -296,8 +296,8 @@ private:
             support = filter_support * filterscale;  // Widen filter when downsampling
             ksize = static_cast<int>(std::ceil(support)) * 2 + 1;  // Total pixels in kernel
 
-            std::vector<double> pre_weights(outSize * ksize);  // Temporary weights
-            bounds.resize(outSize * 2);
+            std::vector<double> pre_weights((size_t) outSize * ksize);  // Temporary weights
+            bounds.resize((size_t) outSize * 2);
             double max_weight = 0.0;
 
 
@@ -325,21 +325,21 @@ private:
                 for (x = 0; x < xmax; x++) {
                     // Distance from input pixel center to output pixel center in input space
                     double w = resample_filter((x + xmin - center + 0.5) * ss);
-                    pre_weights[xx * ksize + x] = w;
+                    pre_weights[(size_t) xx * ksize + x] = w;
                     ww += w;  // Accumulate for normalization
                 }
 
                 // Normalize weights to sum to 1.0 (preserves brightness)
                 for (x = 0; x < xmax; x++) {
                     if (ww != 0.0) {
-                        pre_weights[xx * ksize + x] /= ww;
+                        pre_weights[(size_t) xx * ksize + x] /= ww;
                     }
-                    max_weight = std::max(max_weight, pre_weights[xx * ksize + x]);
+                    max_weight = std::max(max_weight, pre_weights[(size_t) xx * ksize + x]);
                 }
 
                 // Zero-pad remaining kernel positions
                 for (; x < ksize; x++) {
-                    pre_weights[xx * ksize + x] = 0;
+                    pre_weights[(size_t) xx * ksize + x] = 0;
                 }
 
                 // Store input pixel range for this output pixel
@@ -349,7 +349,7 @@ private:
 
             // Convert floating-point coefficients to fixed-point integers
             // Formula: int32 = round(float * 2^PRECISION_BITS)
-            weights.resize(outSize * ksize);
+            weights.resize((size_t) outSize * ksize);
 
             precision = PRECISION_BITS;
             if (algo == RESIZE_ALGO_BICUBIC_TORCHVISION) {
@@ -362,7 +362,7 @@ private:
             }
             const double fxp_scale = std::ldexp(1.0, precision);
 
-            for (int i = 0; i < outSize * ksize; i++) {
+            for (size_t i = 0; i < (size_t) outSize * ksize; i++) {
                 // Pillow adds +/- 0.5 then truncates toward zero; std::round would round twice
                 const double rounded = pre_weights[i] * fxp_scale + (pre_weights[i] < 0 ? -0.5 : 0.5);
                 weights[i] = static_cast<int32_t>(rounded);
@@ -454,6 +454,12 @@ private:
         // Main resampling logic using separable two-pass approach
         const int src_width  = img.get_size().width;
         const int src_height = img.get_size().height;
+
+        // sanity check on the target size
+        if (target_width <= 0 || target_width > 65536 || target_height <= 0 || target_height > 65536) {
+            throw std::runtime_error("resize target " + std::to_string(target_width) + "x" +
+                                     std::to_string(target_height) + " is out of range (max 65536)");
+        }
 
         bool need_horizontal = (target_width != src_width);
         bool need_vertical = (target_height != src_height);
