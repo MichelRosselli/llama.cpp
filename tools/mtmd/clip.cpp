@@ -250,14 +250,14 @@ struct clip_ctx {
             return;
         }
 
-        max_nodes = required_nodes;
-        buf_compute_meta.resize(max_nodes * ggml_tensor_overhead() + ggml_graph_overhead_custom(max_nodes, false));
+        buf_compute_meta.resize(required_nodes * ggml_tensor_overhead() + ggml_graph_overhead_custom(required_nodes, false));
+        is_allocated = false;
         sched.reset(ggml_backend_sched_new(
-            backend_ptrs.data(), backend_buft.data(), backend_ptrs.size(), max_nodes, false, true));
+            backend_ptrs.data(), backend_buft.data(), backend_ptrs.size(), required_nodes, false, true));
         if (cb_eval != nullptr) {
             ggml_backend_sched_set_eval_callback(sched.get(), cb_eval, cb_eval_user_data);
         }
-        is_allocated = false;
+        max_nodes = required_nodes;
     }
 };
 
