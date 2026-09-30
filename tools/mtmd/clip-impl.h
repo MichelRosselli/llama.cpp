@@ -70,6 +70,7 @@
 #define KEY_V_CHANNEL_MULTIPLIERS   "clip.vision.channel_multipliers"
 #define KEY_V_RESIDUAL_BLOCK_COUNT  "clip.vision.residual_block_count"
 #define KEY_V_ATTENTION_LEVELS      "clip.vision.attention_levels"
+#define KEY_SWIGLU_CLAMP            "clip.vision.swiglu_clamp"
 
 #define KEY_MM_PATCH_MERGE_TYPE    "clip.vision.mm_patch_merge_type"
 #define KEY_IMAGE_GRID_PINPOINTS   "clip.vision.image_grid_pinpoints"
@@ -516,6 +517,7 @@ enum projector_type {
     PROJECTOR_TYPE_DEEPSEEK4V,
     PROJECTOR_TYPE_LFM2A,
     PROJECTOR_TYPE_GLM4V,
+    PROJECTOR_TYPE_GLM5V,
     PROJECTOR_TYPE_YOUTUVL,
     PROJECTOR_TYPE_YASA2,
     PROJECTOR_TYPE_KIMIK25,
@@ -584,6 +586,7 @@ static std::map<projector_type, std::string> PROJECTOR_TYPE_NAMES = {
     { PROJECTOR_TYPE_DEEPSEEK4V,        "deepseek4v"},
     { PROJECTOR_TYPE_LFM2A,             "lfm2a"},
     { PROJECTOR_TYPE_GLM4V,             "glm4v"},
+    { PROJECTOR_TYPE_GLM5V,             "glm5v"},
     { PROJECTOR_TYPE_YOUTUVL,           "youtuvl"},
     { PROJECTOR_TYPE_YASA2,             "yasa2"},
     { PROJECTOR_TYPE_KIMIK25,           "kimik25"},
