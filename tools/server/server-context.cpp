@@ -722,13 +722,22 @@ static int process_mtmd_chunk(const server_slot & slot, mtmd::batch_ptr & mbatch
             size_t n_media_tokens = 0;
             const auto * media_tokens = mtmd_batch_get_output_tokens(mbatch.get(), chunk.get(), &n_media_tokens);
             if (media_tokens) {
-                static auto cb = [](llama_batch batch, void * user_data) {
-                    auto * spec = static_cast<common_speculative *>(user_data);
-                    return common_speculative_process(spec, batch) ? 0 : 1;
+                struct cb_data_t {
+                    common_speculative * spec;
+                    llama_context * ctx;
+                } cb_data = { slot.spec, slot.ctx_tgt };
+
+                static auto cb = [](llama_batch b, void * user_data) {
+                    const auto * data = static_cast<cb_data_t *>(user_data);
+                    common_batch batch(data->ctx);
+                    for (int32_t i = 0; i < b.n_tokens; ++i) {
+                        batch.add(b.token[i], b.pos[i], b.seq_id[i][0], b.logits[i]);
+                    }
+                    return common_speculative_process(data->spec, batch) ? 0 : 1;
                 };
                 llama_pos new_n_past;
                 res = mtmd_helper_decode_tokens_chunk(mctx, slot.ctx_tgt, chunk.get(), media_tokens, n_media_tokens,
-                    slot.prompt.tokens.pos_next(), slot.id, llama_n_batch(slot.ctx_tgt), &new_n_past, cb, slot.spec);
+                    slot.prompt.tokens.pos_next(), slot.id, llama_n_batch(slot.ctx_tgt), &new_n_past, cb, &cb_data);
                 if (res != 0) {
                     SLT_ERR(slot, "failed to decode mtmd chunk, idx = %zu, res = %d\n", idx, res);
                     return -1;
@@ -1058,11 +1067,19 @@ private:
             mparams.progress_callback_user_data = &load_progress_mmproj;
         }
 
-        // optionally get the memory usage of mmproj
-        if (has_mmproj && params_base.fit_params) {
+        // get the memory usage of mmproj, also used to check image_max_tokens against n_ubatch
+        mtmd_memory_usage mmproj_usage = {{}, -1, false};
+        int64_t mmproj_usage_t_us = 0;
+        if (has_mmproj) {
             int64_t t_start = ggml_time_us();
-            auto mmproj_mem = mtmd_get_memory_usage(mmproj_path.c_str(), mparams);
-            int64_t t_elapsed = ggml_time_us() - t_start;
+            mmproj_usage = mtmd_get_memory_usage(mmproj_path.c_str(), mparams);
+            mmproj_usage_t_us = ggml_time_us() - t_start;
+        }
+
+        // optionally fit mmproj memory usage
+        if (has_mmproj && params_base.fit_params) {
+            const auto & mmproj_mem = mmproj_usage.backend_mem_usage;
+            const int64_t t_elapsed = mmproj_usage_t_us;
             if (!mmproj_mem.empty()) {
                 size_t total = 0;
                 for (auto & [dev, size] : mmproj_mem) {
@@ -1155,6 +1172,17 @@ private:
 
             if (!is_resume) {
                 mtmd_helper_log_set(common_log_default_callback, nullptr);
+            }
+
+            // non-causal models need the whole image in one ubatch
+            {
+                const int n_ubatch = llama_n_ubatch(ctx_tgt);
+                if (mmproj_usage.use_non_causal && mmproj_usage.image_max_tokens > n_ubatch) {
+                    SRV_WRN("cap image_max_tokens (original=%d) to n_ubatch (%d) because model needs non-causal attention on image\n", mmproj_usage.image_max_tokens, n_ubatch);
+                    SRV_WRN("%s\n", "increase n_ubatch (-ub) to increase vision token budget");
+                    mparams.image_max_tokens = n_ubatch;
+                    mparams.image_min_tokens = std::min(mparams.image_min_tokens, n_ubatch);
+                }
             }
 
             mctx = mtmd_init_from_file(mmproj_path.c_str(), model_tgt, mparams);
