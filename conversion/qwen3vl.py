@@ -13,7 +13,7 @@ from .qwen import Qwen3Model, Qwen3MoeModel
 from .qwenvl import Qwen25AudioModel
 
 
-@ModelBase.register("Qwen3VLForConditionalGeneration", "Qwen3VLMoeForConditionalGeneration", "Qwen3_5ForConditionalGeneration", "Qwen3_5MoeForConditionalGeneration")
+@ModelBase.register("Qwen3VLForConditionalGeneration", "Qwen3VLMoeForConditionalGeneration", "Qwen3_5ForConditionalGeneration", "Qwen3_5MoeForConditionalGeneration", "OpenJevModel")
 @ModelBase.example("Qwen/Qwen3-VL-4B-Instruct", "Qwen/Qwen3-VL-30B-A3B-Instruct", "Qwen/Qwen3.5-9B", "Qwen/Qwen3.5-35B-A3B")
 class Qwen3VLVisionModel(MmprojModel):
     def __init__(self, *args, **kwargs):
@@ -142,6 +142,16 @@ class Qwen3VLVisionModel(MmprojModel):
             return
 
         yield from MmprojModel.modify_tensors(self, data_torch, name, bid)
+
+
+@ModelBase.register("MiniCPMOCRForSequenceClassification")
+class MiniCPMOCRSeqClsVisionModel(Qwen3VLVisionModel):
+    def set_gguf_parameters(self):
+        super().set_gguf_parameters()
+        # trained with the image budget of its processor, wider than the mtmd default of Qwen-VL
+        size = self.preprocessor_config["size"]
+        self.gguf_writer.add_vision_min_pixels(int(size["shortest_edge"]))
+        self.gguf_writer.add_vision_max_pixels(int(size["longest_edge"]))
 
 
 @ModelBase.register("Qwen3OmniMoeForConditionalGeneration")

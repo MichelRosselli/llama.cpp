@@ -373,6 +373,9 @@ static const struct ggml_backend_buffer_i ggml_backend_et_buffer_i = {
     /* .cpy_tensor      = */ ggml_backend_et_buffer_cpy_tensor,
     /* .clear           = */ ggml_backend_et_buffer_clear,
     /* .reset           = */ NULL,
+    /* .set_tensor_n    = */ NULL,
+    /* .get_tensor_n    = */ NULL,
+    /* .cpy_tensor_n    = */ NULL,
 };
 
 static const char * ggml_backend_et_buffer_type_get_name(ggml_backend_buffer_type_t buft) {
@@ -439,12 +442,14 @@ static bool ggml_backend_et_buffer_type_is_host(ggml_backend_buffer_type_t buft)
 }
 
 static const struct ggml_backend_buffer_type_i ggml_backend_et_buffer_type_i = {
-    /* .get_name         = */ ggml_backend_et_buffer_type_get_name,
-    /* .alloc_buffer     = */ ggml_backend_et_buffer_type_alloc_buffer,
-    /* .get_alignment    = */ ggml_backend_et_buffer_type_get_alignment,
-    /* .get_max_size     = */ ggml_backend_et_buffer_type_get_max_size,
-    /* .get_alloc_size   = */ ggml_backend_et_buffer_type_get_alloc_size,
-    /* .is_host          = */ ggml_backend_et_buffer_type_is_host,
+    /* .get_name            = */ ggml_backend_et_buffer_type_get_name,
+    /* .alloc_buffer        = */ ggml_backend_et_buffer_type_alloc_buffer,
+    /* .alloc_buffer_n      = */ NULL,
+    /* .get_alignment       = */ ggml_backend_et_buffer_type_get_alignment,
+    /* .get_max_size        = */ ggml_backend_et_buffer_type_get_max_size,
+    /* .get_alloc_size      = */ ggml_backend_et_buffer_type_get_alloc_size,
+    /* .get_alloc_size_n    = */ NULL,
+    /* .is_host             = */ ggml_backend_et_buffer_type_is_host,
 };
 
 static const char * ggml_backend_et_get_name(ggml_backend_t backend) {

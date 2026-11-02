@@ -103,7 +103,7 @@ common_chat_params common_chat_params_init_apertus_1_5(
             data.generation_prompt += message.render_content();
         }
 
-        data.prompt += data.generation_prompt;
+        data.prompt.append(data.generation_prompt);
     }
 
     const bool has_tools = inputs.tools.is_array() && !inputs.tools.empty() &&
@@ -112,7 +112,7 @@ common_chat_params common_chat_params_init_apertus_1_5(
     const bool extract_reasoning = inputs.reasoning_format != COMMON_REASONING_FORMAT_NONE;
     const bool include_grammar = has_response_format || has_tools;
 
-    auto parser = build_chat_peg_parser([&](common_chat_peg_builder & p) {
+    data.parser = build_chat_peg_parser([&](common_chat_peg_builder & p) {
         auto generation_prompt = p.literal(ASSISTANT_START);
         auto end               = p.end();
 
@@ -132,7 +132,7 @@ common_chat_params common_chat_params_init_apertus_1_5(
         }
 
         auto tool_choice = p.choice();
-        foreach_function(inputs.tools, [&](const json & tool) {
+        foreach_function(inputs.tools, [&](size_t, const json & tool) {
             const auto & function = tool.at("function");
             const auto name = function.at("name").get<std::string>();
             // Do not emit a prefix name before the complete JSON key arrives.
@@ -157,12 +157,10 @@ common_chat_params common_chat_params_init_apertus_1_5(
         return generation_prompt + reasoning + content_before + tools + content_after + end;
     });
 
-    data.parser = parser.save();
-
     if (include_grammar) {
         data.grammar_lazy = !(has_response_format || inputs.tool_choice == COMMON_CHAT_TOOL_CHOICE_REQUIRED);
         data.grammar = build_grammar([&](const common_grammar_builder & builder) {
-            parser.build_grammar(builder, data.grammar_lazy);
+            data.parser.build_grammar(builder, data.grammar_lazy);
         });
 
         if (has_tools && data.grammar_lazy) {
