@@ -960,20 +960,27 @@ clip_image_size mtmd_apertus_image_calc_size(clip_image_size original_size, int 
         min_pixels <= 0 || max_pixels < min_pixels) {
         throw std::runtime_error("invalid Apertus image dimensions or pixel limits");
     }
-    const int64_t area = int64_t(original_size.width) * original_size.height;
-    const int64_t target_area = std::clamp(area, int64_t(min_pixels), int64_t(max_pixels));
-    const double aspect = double(original_size.width) / original_size.height;
-    const int64_t height = int64_t(std::sqrt(target_area / aspect));
-    const int64_t width = int64_t(height * aspect);
-    auto round_dimension = [spatial_factor](int64_t dimension) {
-        const int64_t rounded = std::max<int64_t>(spatial_factor,
-            ((dimension + spatial_factor / 2) / spatial_factor) * spatial_factor);
-        if (rounded > std::numeric_limits<int>::max()) {
-            throw std::runtime_error("Apertus image dimension exceeds supported range");
-        }
-        return int(rounded);
-    };
-    return {round_dimension(width), round_dimension(height)};
+    const double height = original_size.height;
+    const double width = original_size.width;
+    if (std::max(height, width) / std::min(height, width) > 200.0) {
+        throw std::runtime_error("Apertus image aspect ratio exceeds 200");
+    }
+    double h_bar = std::nearbyint(height / spatial_factor) * spatial_factor;
+    double w_bar = std::nearbyint(width / spatial_factor) * spatial_factor;
+    if (h_bar * w_bar > max_pixels) {
+        const double beta = std::sqrt(height * width / max_pixels);
+        h_bar = std::max(double(spatial_factor), std::floor(height / beta / spatial_factor) * spatial_factor);
+        w_bar = std::max(double(spatial_factor), std::floor(width / beta / spatial_factor) * spatial_factor);
+    } else if (h_bar * w_bar < min_pixels) {
+        const double beta = std::sqrt(min_pixels / (height * width));
+        h_bar = std::ceil(height * beta / spatial_factor) * spatial_factor;
+        w_bar = std::ceil(width * beta / spatial_factor) * spatial_factor;
+    }
+    if (h_bar <= 0 || w_bar <= 0 || h_bar > std::numeric_limits<int>::max() ||
+        w_bar > std::numeric_limits<int>::max()) {
+        throw std::runtime_error("Apertus image dimension exceeds supported range");
+    }
+    return {int(w_bar), int(h_bar)};
 }
 
 clip_image_f32 mtmd_apertus_image_prepare(const clip_image_u8 & image, clip_image_size target_size) {

@@ -77,14 +77,20 @@ MAKE_TEST(test_apertus_audio_preprocessor) {
 
 MAKE_TEST(test_apertus_image_preprocessor) {
     const std::vector<std::pair<clip_image_size, clip_image_size>> sizes = {
-        {{429, 806}, {432, 800}}, {{1920, 1080}, {1872, 1056}},
-        {{1400, 1400}, {1408, 1408}}, {{4032, 3024}, {1616, 1216}}, {{1, 1}, {256, 256}},
+        {{429, 806}, {432, 800}}, {{1920, 1080}, {1856, 1040}},
+        {{1400, 1400}, {1392, 1392}}, {{4032, 3024}, {1616, 1200}}, {{1, 1}, {256, 256}},
     };
     for (const auto & entry : sizes) {
         const auto actual = mtmd_apertus_image_calc_size(entry.first, 16, 65536, 1960000);
         t.assert_equal(entry.second.width, actual.width);
         t.assert_equal(entry.second.height, actual.height);
     }
+    const auto small = mtmd_apertus_image_calc_size({128, 128}, 16, 16384, 1960000);
+    t.assert_equal(128, small.width);
+    t.assert_equal(128, small.height);
+    const auto narrow = mtmd_apertus_image_calc_size({1600, 8}, 16, 16384, 1960000);
+    t.assert_equal(1824, narrow.width);
+    t.assert_equal(16, narrow.height);
     for (const auto & args : std::vector<std::tuple<clip_image_size, int, int, int>> {
         {{0, 10}, 16, 65536, 1960000}, {{10, -1}, 16, 65536, 1960000},
         {{10, 10}, 0, 65536, 1960000}, {{10, 10}, 16, 0, 1960000},

@@ -526,6 +526,9 @@ class Apertus1p5MmprojModel(MmprojModel):
         assert self.hparams_audio is not None
         audio = self.hparams_audio
         vision = self.hparams_vision
+        image_size = self.preprocessor_config.get("size", self.preprocessor_config)
+        if not isinstance(image_size, dict) or "min_pixels" not in image_size or "max_pixels" not in image_size:
+            raise ValueError("Apertus image processor must specify both min_pixels and max_pixels")
         spatial_factor = 2 ** (len(vision["channel_multiplier"]) - 1)
         attention_levels = [
             level for level in range(len(vision["channel_multiplier"]))
@@ -549,8 +552,8 @@ class Apertus1p5MmprojModel(MmprojModel):
         self.gguf_writer.add_vision_attention_layernorm_eps(1e-6)
         self.gguf_writer.add_vision_image_mean(self.preprocessor_config["image_mean"])
         self.gguf_writer.add_vision_image_std(self.preprocessor_config["image_std"])
-        self.gguf_writer.add_vision_min_pixels(self.preprocessor_config["min_pixels"])
-        self.gguf_writer.add_vision_max_pixels(self.preprocessor_config["max_pixels"])
+        self.gguf_writer.add_vision_min_pixels(image_size["min_pixels"])
+        self.gguf_writer.add_vision_max_pixels(image_size["max_pixels"])
         self.gguf_writer.add_vision_codebook_size(vision["codebook_size"])
         self.gguf_writer.add_vision_codebook_dim(vision["embed_dim"])
         self.gguf_writer.add_vision_token_offset(offset)
